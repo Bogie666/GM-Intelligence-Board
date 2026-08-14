@@ -1,0 +1,315 @@
+"use client";
+
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
+  BriefcaseBusiness,
+  CalendarDays,
+  ChevronDown,
+  CircleDollarSign,
+  GripVertical,
+  LayoutDashboard,
+  Menu,
+  PhoneCall,
+  Plus,
+  RefreshCw,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Star,
+  X,
+} from "lucide-react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
+import { changeFromPrior, formatMetric, metricAttainment, metricStatus, reorder } from "@/lib/metrics";
+import type { CustomMetricInput, Metric, MetricSection, Status } from "@/lib/types";
+
+const sections: { id: MetricSection; icon: typeof Activity; short: string }[] = [
+  { id: "executive", icon: LayoutDashboard, short: "Executive" },
+  { id: "revenue", icon: CircleDollarSign, short: "Revenue" },
+  { id: "calls", icon: PhoneCall, short: "Calls & Digital" },
+  { id: "appointments", icon: CalendarDays, short: "Appointments" },
+  { id: "sales", icon: BriefcaseBusiness, short: "Sales" },
+  { id: "membership", icon: Star, short: "Membership" },
+];
+
+const periods = ["Today", "Yesterday", "MTD", "QTD", "YTD", "Last 30 Days"];
+const statusCopy: Record<Status, string> = {
+  good: "On target",
+  watch: "Watch",
+  critical: "Off track",
+  neutral: "Informational",
+};
+
+function Sparkline({ values, status }: { values: number[]; status: Status }) {
+  const width = 120;
+  const height = 34;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  const points = values.map((value, index) => {
+    const x = (index / Math.max(values.length - 1, 1)) * width;
+    const y = height - ((value - min) / range) * (height - 5) - 2;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg className={`sparkline sparkline-${status}`} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function MetricCard({
+  metric,
+  editable,
+  onOpen,
+  onHide,
+  onDragStart,
+  onDrop,
+}: {
+  metric: Metric;
+  editable: boolean;
+  onOpen: () => void;
+  onHide: () => void;
+  onDragStart: () => void;
+  onDrop: () => void;
+}) {
+  const status = metricStatus(metric);
+  const attainment = metricAttainment(metric);
+  const change = changeFromPrior(metric);
+  const favorableChange = change !== null && (metric.direction === "lower" ? change <= 0 : change >= 0);
+  const TrendIcon = change !== null && change < 0 ? ArrowDownRight : ArrowUpRight;
+  return (
+    <article
+      className={`metric-card status-${status} ${editable ? "is-editable" : ""}`}
+      draggable={editable}
+      onDragStart={onDragStart}
+      onDragOver={(event) => editable && event.preventDefault()}
+      onDrop={(event) => { event.preventDefault(); onDrop(); }}
+      onClick={() => !editable && onOpen()}
+    >
+      <div className="metric-card-topline" />
+      <div className="metric-head">
+        <div>
+          <div className="metric-label">{metric.title}</div>
+          <div className="source-label"><span className="source-dot" />{metric.source}</div>
+        </div>
+        {editable ? (
+          <div className="edit-actions">
+            <GripVertical size={18} aria-label="Drag to reorder" />
+            <button onClick={(event) => { event.stopPropagation(); onHide(); }} aria-label={`Hide ${metric.title}`}><X size={15} /></button>
+          </div>
+        ) : <span className={`status-pill ${status}`}>{statusCopy[status]}</span>}
+      </div>
+      <div className="metric-main">
+        <div className="metric-value">{formatMetric(metric.actual, metric.kind)}</div>
+        <Sparkline values={metric.sparkline} status={status} />
+      </div>
+      <div className="metric-subtitle">{metric.subtitle}</div>
+      <div className="metric-footer">
+        {attainment !== null ? (
+          <div className="attainment">
+            <div className="attainment-copy"><span>{Math.round(attainment)}% of target</span><strong>{formatMetric(metric.goal ?? 0, metric.kind)}</strong></div>
+            <div className="progress-track"><span style={{ width: `${Math.min(Math.max(attainment, 0), 100)}%` }} /></div>
+          </div>
+        ) : <span className="no-target">No target configured</span>}
+        {change !== null && (
+          <div className={`change ${favorableChange ? "up" : "down"}`}><TrendIcon size={14} />{Math.abs(change).toFixed(1)}%</div>
+        )}
+      </div>
+      {!editable && <div className="card-open-hint">View insight <span>→</span></div>}
+    </article>
+  );
+}
+
+function InsightDrawer({ metric, onClose }: { metric: Metric | null; onClose: () => void }) {
+  if (!metric) return null;
+  const status = metricStatus(metric);
+  const attainment = metricAttainment(metric);
+  return (
+    <div className="drawer-backdrop" onMouseDown={onClose}>
+      <aside className="insight-drawer" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="drawer-head">
+          <div>
+            <span className={`status-pill ${status}`}>{statusCopy[status]}</span>
+            <h2>{metric.title}</h2>
+            <p>{metric.subtitle}</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <div className="drawer-kpis">
+          <div><span>Actual</span><strong>{formatMetric(metric.actual, metric.kind)}</strong></div>
+          <div><span>Target</span><strong>{metric.goal === undefined ? "Not set" : formatMetric(metric.goal, metric.kind)}</strong></div>
+          <div><span>Attainment</span><strong>{attainment === null ? "—" : `${Math.round(attainment)}%`}</strong></div>
+        </div>
+        <div className="drawer-chart">
+          <div className="drawer-section-label">7-period trend</div>
+          <Sparkline values={metric.sparkline} status={status} />
+        </div>
+        <div className="drawer-section-label">GM playbook</div>
+        <div className="playbook-list">
+          {(metric.playbook ?? [
+            { title: "Validate the signal", detail: "Confirm mapping, exclusions, and the operational denominator before coaching to this KPI." },
+            { title: "Assign an owner", detail: "Choose one accountable leader and one measurable action for the next operating huddle." },
+          ]).map((step, index) => (
+            <div className="playbook-step" key={step.title}>
+              <span>{status === "good" ? <Sparkles size={15} /> : index + 1}</span>
+              <div><strong>{step.title}</strong><p>{step.detail}</p></div>
+            </div>
+          ))}
+        </div>
+        <div className="data-definition">
+          <ShieldCheck size={18} />
+          <div><strong>Data lineage</strong><p>Primary source: {metric.source}. Metric definitions and tenant-specific exclusions are managed in Admin → KPI Library.</p></div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+export function Dashboard() {
+  const [locationId, setLocationId] = useState(locations[0].id);
+  const [section, setSection] = useState<MetricSection>("executive");
+  const [period, setPeriod] = useState("MTD");
+  const [editMode, setEditMode] = useState(false);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
+  const [hidden, setHidden] = useState<string[]>([]);
+  const [orders, setOrders] = useState<Record<string, string[]>>({});
+  const [customMetrics, setCustomMetrics] = useState<CustomMetricInput[]>([]);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const hydrate = window.setTimeout(() => {
+      setMounted(true);
+      try {
+        setHidden(JSON.parse(localStorage.getItem("gmib.hidden.v1") ?? "[]"));
+        setOrders(JSON.parse(localStorage.getItem("gmib.orders.v1") ?? "{}"));
+        setCustomMetrics(JSON.parse(localStorage.getItem("gmib.custom-metrics.v1") ?? "[]"));
+      } catch { /* use safe defaults */ }
+    }, 0);
+    return () => window.clearTimeout(hydrate);
+  }, []);
+
+  const location = locations.find((item) => item.id === locationId) ?? locations[0];
+  const allMetrics = useMemo(() => {
+    const custom: Metric[] = customMetrics.map((input) => ({ ...input, direction: "higher", sparkline: [input.actual * .82, input.actual * .86, input.actual * .9, input.actual * .91, input.actual * .96, input.actual * .98, input.actual] }));
+    return [...getMetrics(location), ...custom];
+  }, [location, customMetrics]);
+  const sectionMetrics = allMetrics.filter((metric) => metric.section === section);
+  const orderKey = `${locationId}:${section}`;
+  const orderedMetrics = useMemo(() => {
+    const ids = orders[orderKey] ?? [];
+    return [...sectionMetrics].sort((a, b) => {
+      const ai = ids.indexOf(a.id); const bi = ids.indexOf(b.id);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1; if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }, [sectionMetrics, orders, orderKey]);
+  const visibleMetrics = orderedMetrics.filter((metric) => !hidden.includes(metric.id));
+  const hiddenInSection = orderedMetrics.filter((metric) => hidden.includes(metric.id));
+  const statuses = visibleMetrics.reduce((acc, metric) => {
+    const status = metricStatus(metric);
+    acc[status] += 1;
+    return acc;
+  }, { good: 0, watch: 0, critical: 0, neutral: 0 });
+
+  function persistHidden(next: string[]) {
+    setHidden(next);
+    localStorage.setItem("gmib.hidden.v1", JSON.stringify(next));
+  }
+  function moveCard(targetId: string) {
+    if (!draggedId || draggedId === targetId) return;
+    const ids = visibleMetrics.map((metric) => metric.id);
+    const next = reorder(ids, ids.indexOf(draggedId), ids.indexOf(targetId));
+    const nextOrders = { ...orders, [orderKey]: next };
+    setOrders(nextOrders);
+    localStorage.setItem("gmib.orders.v1", JSON.stringify(nextOrders));
+    setDraggedId(null);
+  }
+  function resetLayout() {
+    const next = { ...orders };
+    delete next[orderKey];
+    setOrders(next);
+    localStorage.setItem("gmib.orders.v1", JSON.stringify(next));
+    persistHidden(hidden.filter((id) => !sectionMetrics.some((metric) => metric.id === id)));
+  }
+
+  if (!mounted) return <div className="loading-screen"><Activity className="spin" /> Loading intelligence board…</div>;
+
+  const CurrentIcon = sections.find((item) => item.id === section)?.icon ?? LayoutDashboard;
+  return (
+    <div className="app-shell" style={{ "--brand-accent": location.accent, "--brand-dark": location.accentDark } as React.CSSProperties}>
+      <aside className={`side-nav ${mobileNav ? "mobile-open" : ""}`}>
+        <div className="portfolio-mark"><div className="cg-mark">CG</div><div><strong>Champions Group</strong><span>GM Intelligence</span></div></div>
+        <nav>
+          <div className="nav-label">Performance</div>
+          {sections.map(({ id, icon: Icon, short }) => (
+            <button key={id} className={section === id ? "active" : ""} onClick={() => { setSection(id); setMobileNav(false); }}><Icon size={18} /><span>{short}</span>{section === id && <span className="active-dot" />}</button>
+          ))}
+          <div className="nav-label admin-label">Management</div>
+          <Link href="/admin"><Settings size={18} /><span>Admin Center</span></Link>
+        </nav>
+        <div className="nav-footer"><ShieldCheck size={17} /><div><strong>Portfolio-ready</strong><span>Tenant-isolated configuration</span></div></div>
+      </aside>
+
+      <main className="main-content">
+        <header className="topbar">
+          <button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)}><Menu size={21} /></button>
+          <div className="location-switcher">
+            <div className="brand-avatar">{location.initials}</div>
+            <div className="location-select-wrap"><span>Viewing location</span><select value={locationId} onChange={(event) => setLocationId(event.target.value)}>{locations.map((item) => <option value={item.id} key={item.id}>{item.brand} · {item.location}</option>)}</select></div>
+            <ChevronDown size={15} />
+          </div>
+          <div className="topbar-right">
+            <div className="sync-state"><RefreshCw size={14} /><span>{location.syncLabel}</span></div>
+            <Link className="admin-button" href="/admin"><Settings size={16} />Admin</Link>
+            <div className="user-avatar">RM</div>
+          </div>
+        </header>
+
+        <section className="workspace">
+          <div className="demo-banner"><span>TEST ENVIRONMENT</span><p>Illustrative data only. Source availability and tenant mapping requirements are labeled in Admin.</p><button><X size={14} /></button></div>
+          <div className="page-head">
+            <div><div className="eyebrow"><CurrentIcon size={15} /> {location.location} operating view</div><h1>{sectionMeta[section].label}</h1><p>{sectionMeta[section].description}</p></div>
+            <div className="page-actions">
+              <div className="period-control"><CalendarDays size={16} /><select value={period} onChange={(event) => setPeriod(event.target.value)}>{periods.map((item) => <option key={item}>{item}</option>)}</select><ChevronDown size={14} /></div>
+              <button className={editMode ? "button primary" : "button secondary"} onClick={() => setEditMode(!editMode)}><GripVertical size={16} />{editMode ? "Done editing" : "Customize view"}</button>
+            </div>
+          </div>
+
+          <div className="signal-strip">
+            <div className="signal-primary"><Activity size={18} /><div><strong>{statuses.critical > 0 ? `${statuses.critical} KPIs need GM attention` : "All visible KPIs are controlled"}</strong><span>{statuses.watch} watch item{statuses.watch === 1 ? "" : "s"} · {statuses.good} on target · {period}</span></div></div>
+            <div className="signal-legend"><span className="legend critical" />Off track <span className="legend watch" />Watch <span className="legend good" />On target</div>
+          </div>
+
+          {editMode && (
+            <div className="layout-toolbar">
+              <div><GripVertical size={18} /><span><strong>Layout edit mode</strong> — drag cards to reorder. Changes save automatically to this browser.</span></div>
+              <div>{hiddenInSection.length > 0 && <button onClick={() => persistHidden(hidden.filter((id) => !hiddenInSection.some((metric) => metric.id === id)))}><Plus size={15} /> Restore {hiddenInSection.length} hidden</button>}<button onClick={resetLayout}>Reset tab</button></div>
+            </div>
+          )}
+
+          <div className="metric-grid">
+            {visibleMetrics.map((metric) => (
+              <MetricCard key={metric.id} metric={metric} editable={editMode} onOpen={() => setSelectedMetric(metric)} onHide={() => persistHidden([...hidden, metric.id])} onDragStart={() => setDraggedId(metric.id)} onDrop={() => moveCard(metric.id)} />
+            ))}
+          </div>
+          {visibleMetrics.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No visible cards</h3><p>Restore hidden cards or add KPIs from the Admin Center.</p><button className="button secondary" onClick={resetLayout}>Restore default layout</button></div>}
+
+          <section className="detail-panel">
+            <div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta[section].label} scorecard</h2></div><button className="text-button">Export CSV</button></div>
+            <div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Target</th><th>Attainment</th><th>Vs prior</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleMetrics.map((metric) => { const status=metricStatus(metric); const att=metricAttainment(metric); const ch=changeFromPrior(metric); const favorable=ch!==null&&(metric.direction==="lower"?ch<=0:ch>=0); return <tr key={metric.id} onClick={() => setSelectedMetric(metric)}><td><strong>{metric.title}</strong><span>{metric.subtitle}</span></td><td>{formatMetric(metric.actual,metric.kind)}</td><td>{metric.goal===undefined?"—":formatMetric(metric.goal,metric.kind)}</td><td>{att===null?"—":`${Math.round(att)}%`}</td><td className={favorable?"positive":"negative"}>{ch===null?"—":`${ch>=0?"+":""}${ch.toFixed(1)}%`}</td><td><span className="table-source"><span className="source-dot" />{metric.source}</span></td><td><span className={`status-pill ${status}`}>{statusCopy[status]}</span></td></tr>; })}</tbody></table></div>
+          </section>
+          <footer className="page-footer"><span>GM Intelligence Board · Test Build</span><span>Definitions are tenant-configurable. Data confidence is shown by source.</span></footer>
+        </section>
+      </main>
+      <InsightDrawer metric={selectedMetric} onClose={() => setSelectedMetric(null)} />
+    </div>
+  );
+}
