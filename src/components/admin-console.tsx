@@ -6,7 +6,9 @@ import {
   Building2,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleAlert,
   Database,
   Eye,
@@ -17,6 +19,7 @@ import {
   LockKeyhole,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Settings2,
   ShieldCheck,
@@ -28,8 +31,9 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { locations } from "@/lib/demo-data";
-import type { CustomMetricInput, MetricKind, MetricSection, SourceKey } from "@/lib/types";
+import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
+import { cloneTemplate, defaultRoleTemplates, metricSections, moveTemplateMetric, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
+import type { CustomMetricInput, LayoutTemplate, Metric, MetricKind, MetricSection, SourceKey } from "@/lib/types";
 
 type AdminTab = "overview" | "locations" | "servicetitan" | "metrics" | "layouts" | "sources";
 
@@ -63,12 +67,15 @@ export function AdminConsole() {
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [testMessage, setTestMessage] = useState("");
   const [customMetrics, setCustomMetrics] = useState<CustomMetricInput[]>([]);
+  const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
   const [metricForm, setMetricForm] = useState(defaultMetricForm);
   const [saved, setSaved] = useState(false);
+  const [templateSaved, setTemplateSaved] = useState(false);
 
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       try { setCustomMetrics(JSON.parse(localStorage.getItem("gmib.custom-metrics.v1") ?? "[]")); } catch { /* safe default */ }
+      try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"))); } catch { setRoleTemplates(normalizeRoleTemplates([])); }
     }, 0);
     return () => window.clearTimeout(hydrate);
   }, []);
@@ -102,6 +109,13 @@ export function AdminConsole() {
     setCustomMetrics(updated); localStorage.setItem("gmib.custom-metrics.v1", JSON.stringify(updated));
   }
   function saveConfig() { setSaved(true); window.setTimeout(() => setSaved(false), 1800); }
+  function saveRoleTemplate(template: LayoutTemplate) {
+    const updated = roleTemplates.map((item) => item.id === template.id ? { ...cloneTemplate(template), updatedAt: new Date().toISOString() } : item);
+    setRoleTemplates(updated);
+    localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updated));
+    setTemplateSaved(true);
+    window.setTimeout(() => setTemplateSaved(false), 2200);
+  }
 
   return (
     <div className="admin-shell">
@@ -119,7 +133,7 @@ export function AdminConsole() {
           {tab === "locations" && <Locations saved={saved} onSave={saveConfig} />}
           {tab === "servicetitan" && <ServiceTitanForm showSecret={showSecret} setShowSecret={setShowSecret} testState={testState} testMessage={testMessage} onSubmit={testConnection} />}
           {tab === "metrics" && <MetricLibrary customMetrics={customMetrics} form={metricForm} setForm={setMetricForm} onAdd={addMetric} onDelete={deleteMetric} />}
-          {tab === "layouts" && <Layouts />}
+          {tab === "layouts" && <Layouts templates={roleTemplates} saved={templateSaved} onSave={saveRoleTemplate} />}
           {tab === "sources" && <Sources />}
         </div>
       </main>
@@ -171,8 +185,88 @@ function MetricLibrary({ customMetrics, form, setForm, onAdd, onDelete }: { cust
   </>;
 }
 
-function Layouts() {
-  return <><PageTitle eyebrow="Presentation & access" title="Layouts & role templates" copy="Start from a governed role template, then let each GM reorder approved cards without changing the metric definition." /><div className="admin-grid-three">{[["GM daily view","8 cards","Revenue, booking, sales, membership, capacity"],["Department leader","12 cards","Trade-specific conversion and productivity"],["Executive portfolio","10 cards","Cross-brand summary and variance ranking"]].map((item,index)=><section className="admin-card role-card" key={item[0]}><div className="role-icon">{index===0?<Building2/>:index===1?<Users/>:<BarChart3/>}</div><span className="template-badge">{index===0?"Default":"Template"}</span><h3>{item[0]}</h3><strong>{item[1]}</strong><p>{item[2]}</p><button className="button secondary">Edit template</button></section>)}</div><section className="admin-card access-card"><div className="card-title"><div><span>Access model</span><h3>Recommended production roles</h3></div><ShieldCheck /></div><div className="access-grid"><div><strong>Portfolio admin</strong><p>All tenants, credentials, mappings, budgets, and users.</p></div><div><strong>Brand executive</strong><p>All locations inside assigned tenant; no credential access.</p></div><div><strong>General manager</strong><p>Assigned locations, approved KPI customization, exports.</p></div><div><strong>Department leader</strong><p>Assigned department views; no target or definition edits.</p></div></div></section></>;
+function Layouts({ templates, saved, onSave }: { templates: LayoutTemplate[]; saved: boolean; onSave: (template: LayoutTemplate) => void }) {
+  const [editingId, setEditingId] = useState<LayoutTemplate["id"] | null>(null);
+  const [selectedSection, setSelectedSection] = useState<MetricSection>("executive");
+  const [draft, setDraft] = useState<LayoutTemplate | null>(null);
+  const catalog = getMetrics(locations[0]);
+
+  function beginEdit(template: LayoutTemplate) {
+    setDraft(cloneTemplate(template));
+    setSelectedSection("executive");
+    setEditingId(template.id);
+  }
+
+  function toggleMetric(metricId: string) {
+    if (!draft) return;
+    const current = draft.sections[selectedSection];
+    const next = current.includes(metricId) ? current.filter((id) => id !== metricId) : [...current, metricId];
+    setDraft({ ...draft, sections: { ...draft.sections, [selectedSection]: next } });
+  }
+
+  function moveMetric(metricId: string, direction: -1 | 1) {
+    if (!draft) return;
+    setDraft({
+      ...draft,
+      sections: {
+        ...draft.sections,
+        [selectedSection]: moveTemplateMetric(draft.sections[selectedSection], metricId, direction),
+      },
+    });
+  }
+
+  function resetSection() {
+    if (!draft) return;
+    const fallback = defaultRoleTemplates.find((template) => template.id === draft.id);
+    if (!fallback) return;
+    setDraft({ ...draft, sections: { ...draft.sections, [selectedSection]: [...fallback.sections[selectedSection]] } });
+  }
+
+  const selectedIds = draft?.sections[selectedSection] ?? [];
+  const sectionCatalog = catalog.filter((metric) => metric.section === selectedSection);
+  const orderedCatalog = [
+    ...selectedIds.map((id) => sectionCatalog.find((metric) => metric.id === id)).filter((metric): metric is Metric => Boolean(metric)),
+    ...sectionCatalog.filter((metric) => !selectedIds.includes(metric.id)),
+  ];
+
+  return <>
+    <PageTitle eyebrow="Presentation & access" title="Layouts & role templates" copy="Edit the governed role template, choose the KPIs each dashboard tab should contain, and set their default order. GMs can still make approved personal layout changes." />
+    <div className="admin-grid-three">{templates.map((template,index)=>{
+      const total = metricSections.reduce((sum, section) => sum + template.sections[section].length, 0);
+      return <section className={`admin-card role-card ${editingId === template.id ? "selected" : ""}`} key={template.id}>
+        <div className="role-icon">{index===0?<Building2/>:index===1?<Users/>:<BarChart3/>}</div>
+        <span className="template-badge">{index===0?"GM default":"Role template"}</span>
+        <h3>{template.name}</h3><strong>{total} KPI placements</strong><p>{template.description}</p>
+        <button className="button secondary" onClick={() => beginEdit(template)}>Edit template</button>
+      </section>;
+    })}</div>
+
+    {draft && <section className="admin-card template-editor" aria-label={`Edit ${draft.name}`}>
+      <div className="template-editor-head">
+        <div><span className="editor-kicker">Editing role template</span><h2>{draft.name}</h2><p>Changes become the browser-local default for this role after you save.</p></div>
+        <button className="icon-btn" aria-label="Close template editor" onClick={() => { setDraft(null); setEditingId(null); }}><XCircle size={19} /></button>
+      </div>
+      <div className="template-editor-fields">
+        <label>Template name<input value={draft.name} onChange={(event) => setDraft({...draft,name:event.target.value})} /></label>
+        <label>Description<input value={draft.description} onChange={(event) => setDraft({...draft,description:event.target.value})} /></label>
+      </div>
+      <div className="template-section-tabs" role="tablist">{metricSections.map((section) => <button role="tab" aria-selected={selectedSection === section} className={selectedSection === section ? "active" : ""} key={section} onClick={() => setSelectedSection(section)}>{sectionMeta[section].label}<span>{draft.sections[section].length}</span></button>)}</div>
+      <div className="template-editor-toolbar"><div><strong>{sectionMeta[selectedSection].label}</strong><span>{selectedIds.length} of {sectionCatalog.length} KPIs enabled</span></div><button onClick={resetSection}><RotateCcw size={14}/>Reset this tab</button></div>
+      <div className="template-metric-list">{orderedCatalog.map((metric) => {
+        const enabled = selectedIds.includes(metric.id);
+        const position = selectedIds.indexOf(metric.id);
+        return <div className={enabled ? "enabled" : ""} key={metric.id}>
+          <button className={`metric-toggle ${enabled ? "checked" : ""}`} aria-label={`${enabled ? "Remove" : "Add"} ${metric.title}`} aria-pressed={enabled} onClick={() => toggleMetric(metric.id)}>{enabled && <Check size={14}/>}</button>
+          <div className="template-metric-copy"><strong>{metric.title}</strong><span>{metric.source} · {metric.subtitle}</span></div>
+          <span className="template-order">{enabled ? `#${position + 1}` : "Hidden"}</span>
+          <div className="template-move-actions"><button aria-label={`Move ${metric.title} up`} disabled={!enabled || position === 0} onClick={() => moveMetric(metric.id,-1)}><ChevronUp size={15}/></button><button aria-label={`Move ${metric.title} down`} disabled={!enabled || position === selectedIds.length - 1} onClick={() => moveMetric(metric.id,1)}><ChevronDown size={15}/></button></div>
+        </div>;
+      })}</div>
+      <div className="template-editor-footer"><span>{saved ? <><CheckCircle2 size={15}/>Template saved. Dashboard defaults updated.</> : "Unsaved template changes"}</span><div><button className="button secondary" onClick={() => { setDraft(null); setEditingId(null); }}>Cancel</button><button className="button primary" onClick={() => onSave(draft)}><Save size={15}/>Save template</button></div></div>
+    </section>}
+
+    <section className="admin-card access-card"><div className="card-title"><div><span>Access model</span><h3>Recommended production roles</h3></div><ShieldCheck /></div><div className="access-grid"><div><strong>Portfolio admin</strong><p>All tenants, credentials, mappings, budgets, and users.</p></div><div><strong>Brand executive</strong><p>All locations inside assigned tenant; no credential access.</p></div><div><strong>General manager</strong><p>Assigned locations, approved KPI customization, exports.</p></div><div><strong>Department leader</strong><p>Assigned department views; no target or definition edits.</p></div></div></section>
+  </>;
 }
 
 function Sources() {

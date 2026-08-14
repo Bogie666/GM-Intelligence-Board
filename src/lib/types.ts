@@ -39,6 +39,15 @@ export interface LocationConfig {
   metricScale: number;
 }
 
+export interface LayoutTemplate {
+  id: "gm-daily" | "department-leader" | "executive-portfolio";
+  name: string;
+  role: string;
+  description: string;
+  sections: Record<MetricSection, string[]>;
+  updatedAt?: string;
+}
+
 export interface CustomMetricInput {
   id: string;
   title: string;

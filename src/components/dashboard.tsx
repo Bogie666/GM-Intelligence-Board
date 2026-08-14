@@ -24,8 +24,9 @@ import {
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
+import { defaultRoleTemplates, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
 import { changeFromPrior, formatMetric, metricAttainment, metricStatus, reorder } from "@/lib/metrics";
-import type { CustomMetricInput, Metric, MetricSection, Status } from "@/lib/types";
+import type { CustomMetricInput, LayoutTemplate, Metric, MetricSection, Status } from "@/lib/types";
 
 const sections: { id: MetricSection; icon: typeof Activity; short: string }[] = [
   { id: "executive", icon: LayoutDashboard, short: "Executive" },
@@ -180,6 +181,7 @@ export function Dashboard() {
   const [hidden, setHidden] = useState<string[]>([]);
   const [orders, setOrders] = useState<Record<string, string[]>>({});
   const [customMetrics, setCustomMetrics] = useState<CustomMetricInput[]>([]);
+  const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -190,7 +192,10 @@ export function Dashboard() {
         setHidden(JSON.parse(localStorage.getItem("gmib.hidden.v1") ?? "[]"));
         setOrders(JSON.parse(localStorage.getItem("gmib.orders.v1") ?? "{}"));
         setCustomMetrics(JSON.parse(localStorage.getItem("gmib.custom-metrics.v1") ?? "[]"));
-      } catch { /* use safe defaults */ }
+        setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]")));
+      } catch {
+        setRoleTemplates(normalizeRoleTemplates([]));
+      }
     }, 0);
     return () => window.clearTimeout(hydrate);
   }, []);
@@ -200,7 +205,17 @@ export function Dashboard() {
     const custom: Metric[] = customMetrics.map((input) => ({ ...input, direction: "higher", sparkline: [input.actual * .82, input.actual * .86, input.actual * .9, input.actual * .91, input.actual * .96, input.actual * .98, input.actual] }));
     return [...getMetrics(location), ...custom];
   }, [location, customMetrics]);
-  const sectionMetrics = allMetrics.filter((metric) => metric.section === section);
+  const gmTemplate = roleTemplates.find((template) => template.id === "gm-daily") ?? defaultRoleTemplates[0];
+  const sectionMetrics = useMemo(() => {
+    const inSection = allMetrics.filter((metric) => metric.section === section);
+    const metricById = new Map(inSection.map((metric) => [metric.id, metric]));
+    const customIds = new Set(customMetrics.map((metric) => metric.id));
+    const governed = gmTemplate.sections[section]
+      .map((id) => metricById.get(id))
+      .filter((metric): metric is Metric => Boolean(metric));
+    const custom = inSection.filter((metric) => customIds.has(metric.id) && !gmTemplate.sections[section].includes(metric.id));
+    return [...governed, ...custom];
+  }, [allMetrics, section, customMetrics, gmTemplate]);
   const orderKey = `${locationId}:${section}`;
   const orderedMetrics = useMemo(() => {
     const ids = orders[orderKey] ?? [];

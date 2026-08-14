@@ -11,7 +11,8 @@ This repository currently contains a polished **test build** with illustrative d
 - Semantic KPI status, goals, trends, source lineage, and actionable playbooks
 - Drag/reorder and hide/restore cards per location and tab
 - Browser-local custom KPI builder in Admin → KPI Library
-- Admin setup checklist, tenant configuration, ServiceTitan field validation, source matrix, layouts, and role model
+- Admin role-template editor with per-tab KPI visibility, default ordering, renaming, reset, and save behavior
+- Admin setup checklist, tenant configuration, ServiceTitan field validation, source matrix, and role model
 - `/api/health` and a validation-only ServiceTitan integration endpoint
 - Responsive desktop, tablet, and mobile layouts
 
@@ -42,6 +43,9 @@ The test build stores only these non-sensitive presentation settings in browser 
 - card order
 - hidden cards
 - custom demo KPIs
+- role-template KPI visibility and default ordering (`gmib.role-templates.v1`)
+
+Saved changes to the **GM daily view** become the dashboard default immediately in the same browser. Individual GM drag/hide preferences remain a separate override layer.
 
 It does **not** persist credentials, tenant mappings, budgets, users, or API data. Production must use Postgres and encrypted server-side secret storage.
 
