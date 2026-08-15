@@ -27,6 +27,7 @@ import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
 import { defaultRoleTemplates, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
 import { customKpiToMetric, evaluateCustomKpis, readCustomKpiStore, type CustomKpiDefinition } from "@/lib/custom-kpis";
 import { changeFromPrior, formatMetric, metricAttainment, metricStatus, reorder } from "@/lib/metrics";
+import { applyPublishedTargets, createSeedTargetBudgetStore, DEMO_AS_OF_DATE, DEMO_FISCAL_MONTH, readTargetBudgetStore, type TargetBudgetStore, type TargetContext, type TargetedMetric } from "@/lib/targets";
 import type { LayoutTemplate, Metric, MetricSection, Status } from "@/lib/types";
 
 const sections: { id: MetricSection; icon: typeof Activity; short: string }[] = [
@@ -64,6 +65,12 @@ function Sparkline({ values, status }: { values: number[]; status: Status }) {
   );
 }
 
+function targetSourceLabel(context: TargetContext): string {
+  if (context.source === "budget") return `Revenue budget · v${context.version} · ${context.versionName}`;
+  const grain = [context.trade, context.serviceLine].filter((value) => value && value !== "all").join(" / ");
+  return `${context.locationId === "*" || context.locationId === "portfolio" ? "Portfolio fallback" : "Location target"}${grain ? ` · ${grain}` : ""} · v${context.version}`;
+}
+
 function MetricCard({
   metric,
   editable,
@@ -72,7 +79,7 @@ function MetricCard({
   onDragStart,
   onDrop,
 }: {
-  metric: Metric;
+  metric: TargetedMetric;
   editable: boolean;
   onOpen: () => void;
   onHide: () => void;
@@ -111,6 +118,7 @@ function MetricCard({
         <Sparkline values={metric.sparkline} status={status} />
       </div>
       <div className="metric-subtitle">{metric.subtitle}</div>
+      {metric.targetContext && <div className="target-source-label">{targetSourceLabel(metric.targetContext)}</div>}
       <div className="metric-footer">
         {attainment !== null ? (
           <div className="attainment">
@@ -127,7 +135,7 @@ function MetricCard({
   );
 }
 
-function InsightDrawer({ metric, onClose }: { metric: Metric | null; onClose: () => void }) {
+function InsightDrawer({ metric, onClose }: { metric: TargetedMetric | null; onClose: () => void }) {
   if (!metric) return null;
   const status = metricStatus(metric);
   const attainment = metricAttainment(metric);
@@ -167,6 +175,12 @@ function InsightDrawer({ metric, onClose }: { metric: Metric | null; onClose: ()
           <ShieldCheck size={18} />
           <div><strong>Data lineage</strong><p>Primary source: {metric.source}. Metric definitions and tenant-specific exclusions are managed in Admin → KPI Library.</p></div>
         </div>
+        {metric.targetContext && (
+          <div className="data-definition target-lineage">
+            <CircleDollarSign size={18} />
+            <div><strong>Target lineage</strong><p>{targetSourceLabel(metric.targetContext)} · Owner: {metric.targetContext.owner} · Scope: {metric.targetContext.locationId}{metric.targetContext.fiscalMonth ? ` · Period: ${metric.targetContext.fiscalMonth}` : ` · Effective: ${metric.targetContext.effectiveFrom} through ${metric.targetContext.effectiveTo ?? "open-ended"}`}.</p></div>
+          </div>
+        )}
       </aside>
     </div>
   );
@@ -178,10 +192,11 @@ export function Dashboard() {
   const [period, setPeriod] = useState("MTD");
   const [editMode, setEditMode] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
-  const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
+  const [selectedMetric, setSelectedMetric] = useState<TargetedMetric | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
   const [orders, setOrders] = useState<Record<string, string[]>>({});
   const [customDefinitions, setCustomDefinitions] = useState<CustomKpiDefinition[]>([]);
+  const [targetBudgetStore, setTargetBudgetStore] = useState<TargetBudgetStore>(() => createSeedTargetBudgetStore());
   const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -193,6 +208,7 @@ export function Dashboard() {
       try { setOrders(JSON.parse(localStorage.getItem("gmib.orders.v1") ?? "{}")); } catch { setOrders({}); }
       const store = readCustomKpiStore(localStorage, new Date().toISOString());
       setCustomDefinitions(store.definitions);
+      setTargetBudgetStore(readTargetBudgetStore(localStorage));
       const publishedIds = store.definitions.filter((item) => item.status === "published").map((item) => item.id);
       try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"), publishedIds)); } catch { setRoleTemplates(normalizeRoleTemplates([], publishedIds)); }
     }, 0);
@@ -207,8 +223,8 @@ export function Dashboard() {
       .filter((definition) => definition.status === "published" && (definition.scopeMode === "portfolio" || definition.locationIds.includes(location.id)))
       .map((definition) => customKpiToMetric(definition, evaluations.get(definition.id) ?? { state: "unavailable", sparkline: [], source: "Custom", lineage: [], reason: "Unavailable" }))
       .filter((metric): metric is Metric => Boolean(metric));
-    return [...core, ...custom];
-  }, [location, customDefinitions]);
+    return applyPublishedTargets([...core, ...custom], location.id, DEMO_AS_OF_DATE, targetBudgetStore.rules, targetBudgetStore.budgets, DEMO_FISCAL_MONTH);
+  }, [location, customDefinitions, targetBudgetStore]);
   const gmTemplate = roleTemplates.find((template) => template.id === "gm-daily") ?? defaultRoleTemplates[0];
   const sectionMetrics = useMemo(() => {
     const inSection = allMetrics.filter((metric) => metric.section === section);
@@ -217,7 +233,7 @@ export function Dashboard() {
       .filter((definition) => definition.status === "published" && definition.section === section && definition.templateIds.includes("gm-daily"))
       .map((definition) => definition.id);
     const assignedIds = [...gmTemplate.sections[section], ...assignedCustomIds.filter((id) => !gmTemplate.sections[section].includes(id))];
-    return assignedIds.map((id) => metricById.get(id)).filter((metric): metric is Metric => Boolean(metric));
+    return assignedIds.map((id) => metricById.get(id)).filter((metric): metric is TargetedMetric => Boolean(metric));
   }, [allMetrics, section, customDefinitions, gmTemplate]);
   const orderKey = `${locationId}:${section}`;
   const orderedMetrics = useMemo(() => {
@@ -322,7 +338,7 @@ export function Dashboard() {
 
           <section className="detail-panel">
             <div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta[section].label} scorecard</h2></div><button className="text-button">Export CSV</button></div>
-            <div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Target</th><th>Attainment</th><th>Vs prior</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleMetrics.map((metric) => { const status=metricStatus(metric); const att=metricAttainment(metric); const ch=changeFromPrior(metric); const favorable=ch!==null&&(metric.direction==="lower"?ch<=0:ch>=0); return <tr key={metric.id} onClick={() => setSelectedMetric(metric)}><td><strong>{metric.title}</strong><span>{metric.subtitle}</span></td><td>{formatMetric(metric.actual,metric.kind)}</td><td>{metric.goal===undefined?"—":formatMetric(metric.goal,metric.kind)}</td><td>{att===null?"—":`${Math.round(att)}%`}</td><td className={favorable?"positive":"negative"}>{ch===null?"—":`${ch>=0?"+":""}${ch.toFixed(1)}%`}</td><td><span className="table-source"><span className="source-dot" />{metric.source}</span></td><td><span className={`status-pill ${status}`}>{statusCopy[status]}</span></td></tr>; })}</tbody></table></div>
+            <div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Target</th><th>Attainment</th><th>Vs prior</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleMetrics.map((metric) => { const status=metricStatus(metric); const att=metricAttainment(metric); const ch=changeFromPrior(metric); const favorable=ch!==null&&(metric.direction==="lower"?ch<=0:ch>=0); return <tr key={metric.id} onClick={() => setSelectedMetric(metric)}><td><strong>{metric.title}</strong><span>{metric.subtitle}</span></td><td>{formatMetric(metric.actual,metric.kind)}</td><td>{metric.goal===undefined?"—":<>{formatMetric(metric.goal,metric.kind)}{metric.targetContext&&<span className="table-target-source">{targetSourceLabel(metric.targetContext)}</span>}</>}</td><td>{att===null?"—":`${Math.round(att)}%`}</td><td className={favorable?"positive":"negative"}>{ch===null?"—":`${ch>=0?"+":""}${ch.toFixed(1)}%`}</td><td><span className="table-source"><span className="source-dot" />{metric.source}</span></td><td><span className={`status-pill ${status}`}>{statusCopy[status]}</span></td></tr>; })}</tbody></table></div>
           </section>
           <footer className="page-footer"><span>GM Intelligence Board · Test Build</span><span>Definitions are tenant-configurable. Data confidence is shown by source.</span></footer>
         </section>

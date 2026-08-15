@@ -11,6 +11,11 @@ describe("metricStatus", () => {
   it("marks a metric good at target", () => expect(metricStatus({ ...base, actual: 100 })).toBe("good"));
   it("marks a metric as watch inside the warning band", () => expect(metricStatus(base)).toBe("watch"));
   it("marks a metric critical below the warning band", () => expect(metricStatus({ ...base, actual: 89 })).toBe("critical"));
+  it("uses the configured warning and critical attainment floors when both governance bands exist", () => {
+    expect(metricStatus({ ...base, actual: 95, warningAt: 90, criticalAt: 80 })).toBe("good");
+    expect(metricStatus({ ...base, actual: 85, warningAt: 90, criticalAt: 80 })).toBe("watch");
+    expect(metricStatus({ ...base, actual: 79, warningAt: 90, criticalAt: 80 })).toBe("critical");
+  });
   it("handles lower-is-better targets", () => {
     const lower = { ...base, actual: 10, goal: 12, direction: "lower" as const };
     expect(metricStatus(lower)).toBe("good");

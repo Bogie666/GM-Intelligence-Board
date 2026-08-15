@@ -100,5 +100,8 @@ To reset browser-local test customizations, clear these local-storage keys:
 - `gmib.hidden.v1`
 - `gmib.orders.v1`
 - `gmib.custom-metrics.v1`
+- `gmib.role-templates.v1`
+- `gmib.servicetitan-connections.v1`
+- `gmib.target-budget.v1`
 
-No production data or credentials exist in the prototype.
+No production data or credentials exist in the prototype. ServiceTitan credential inputs are discarded after masked demo metadata is created.

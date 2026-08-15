@@ -41,8 +41,8 @@ Scheduled workers / queues
 - `data_connections`: encrypted credentials and provider state
 - `business_units`: source units and reporting-division mapping
 - `metric_definitions`: formula, format, owner, allowed dimensions
-- `metric_overrides`: tenant/location target, threshold, visibility
-- `budgets`: monthly location/division targets with upload version
+- `metric_overrides`: effective-dated tenant/location/trade/service-line targets, thresholds, status, owner, and version
+- `budgets`: exact-location monthly financial targets with trade, source version, owner, and approval status
 - `layout_templates`: governed card sets by role
 - `user_layouts`: permitted personal order/visibility overrides
 - `kpi_snapshots`: materialized value, denominator, source timestamp, confidence
@@ -94,7 +94,15 @@ Every KPI response should include:
 }
 ```
 
-This makes numbers explainable and allows the UI to degrade honestly when a source is late or incomplete.
+This makes numbers explainable and allows the UI to degrade honestly when a source is late or incomplete. Every materialized KPI must also preserve the resolved target or budget record ID so historical dashboards do not silently adopt a later target.
+
+## Target and budget resolution
+
+Metric formulas remain centrally governed; operating targets vary independently. For an effective date, target resolution prefers an exact location over a portfolio fallback, then the most specific trade/service-line scope, then the newest governed version. Draft and archived rules never affect dashboards.
+
+Monthly revenue budgets use an exact location + metric + trade + fiscal month match and never inherit a portfolio fallback. Budget versions remain finance-owned and auditable.
+
+The prototype exercises this contract in browser storage: Admin can draft/publish/archive location-specific rules and budgets, and the dashboard displays the resolved goal and target lineage. Production moves the same IDs and resolution rules to Postgres and materialized KPI snapshots.
 
 ## Tenant configuration hierarchy
 

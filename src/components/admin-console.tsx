@@ -14,7 +14,6 @@ import {
   CircleAlert,
   Database,
   Eye,
-  EyeOff,
   FileSpreadsheet,
   KeyRound,
   LayoutGrid,
@@ -27,26 +26,30 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Target,
   Trash2,
   Users,
   Webhook,
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
 import { cloneTemplate, defaultRoleTemplates, metricSections, moveTemplateMetric, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
 import { createKpiId, customKpiToMetric, duplicateCustomKpiDefinition, evaluateCustomKpis, readCustomKpiStore, writeCustomKpiStore, type CustomKpiDefinition, type CustomKpiStore } from "@/lib/custom-kpis";
 import { KpiWizard } from "@/components/kpi-wizard";
+import { ServiceTitanConnections } from "@/components/service-titan-connections";
+import { TargetsAndBudgets } from "@/components/targets-and-budgets";
 import type { LayoutTemplate, Metric, MetricSection } from "@/lib/types";
 
-type AdminTab = "overview" | "locations" | "servicetitan" | "domo" | "metrics" | "layouts" | "sources";
+type AdminTab = "overview" | "locations" | "servicetitan" | "targets" | "domo" | "metrics" | "layouts" | "sources";
 type TestState = "idle" | "testing" | "ok" | "error";
 
 const tabs: { id: AdminTab; label: string; icon: typeof Settings2 }[] = [
   { id: "overview", label: "Setup overview", icon: Settings2 },
   { id: "locations", label: "Brands & locations", icon: Building2 },
   { id: "servicetitan", label: "ServiceTitan", icon: Database },
+  { id: "targets", label: "Targets & budgets", icon: Target },
   { id: "domo", label: "Domo", icon: FileSpreadsheet },
   { id: "metrics", label: "KPI library", icon: SlidersHorizontal },
   { id: "layouts", label: "Layouts & access", icon: LayoutGrid },
@@ -69,9 +72,6 @@ const sourceRows = [
 
 export function AdminConsole() {
   const [tab, setTab] = useState<AdminTab>("overview");
-  const [showSecret, setShowSecret] = useState(false);
-  const [testState, setTestState] = useState<TestState>("idle");
-  const [testMessage, setTestMessage] = useState("");
   const [domoTestState, setDomoTestState] = useState<TestState>("idle");
   const [domoTestMessage, setDomoTestMessage] = useState("");
   const [customKpiStore, setCustomKpiStore] = useState<CustomKpiStore>({ schemaVersion: 2, definitions: [] });
@@ -91,14 +91,6 @@ export function AdminConsole() {
     return () => window.clearTimeout(hydrate);
   }, []);
 
-  async function testConnection(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setTestState("testing"); setTestMessage("");
-    const form = new FormData(event.currentTarget);
-    const body = { provider: "servicetitan", tenantId: form.get("tenantId"), clientId: form.get("clientId"), appKey: form.get("appKey") };
-    const response = await fetch("/api/integrations/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const result = await response.json();
-    setTestState(response.ok ? "ok" : "error"); setTestMessage(result.message);
-  }
 
   async function testDomoConnection() {
     setDomoTestState("testing");
@@ -180,7 +172,8 @@ export function AdminConsole() {
         <div className="admin-content">
           {tab === "overview" && <Overview onNavigate={setTab} />}
           {tab === "locations" && <Locations saved={saved} onSave={saveConfig} />}
-          {tab === "servicetitan" && <ServiceTitanForm showSecret={showSecret} setShowSecret={setShowSecret} testState={testState} testMessage={testMessage} onSubmit={testConnection} />}
+          {tab === "servicetitan" && <ServiceTitanConnections />}
+          {tab === "targets" && <TargetsAndBudgets />}
           {tab === "domo" && <DomoIntegration testState={domoTestState} testMessage={domoTestMessage} onTest={testDomoConnection} />}
           {tab === "metrics" && <MetricLibrary definitions={customKpiStore.definitions} templates={roleTemplates} editing={editingKpi} showWizard={showKpiWizard} onCreate={() => { setEditingKpi(undefined); setShowKpiWizard(true); }} onEdit={(definition) => { setEditingKpi(definition); setShowKpiWizard(true); }} onCancel={() => { setEditingKpi(undefined); setShowKpiWizard(false); }} onSave={saveCustomKpi} onArchive={archiveCustomKpi} onDelete={deleteDraftKpi} onDuplicate={duplicateCustomKpi} />}
           {tab === "layouts" && <Layouts templates={roleTemplates} customDefinitions={customKpiStore.definitions} saved={templateSaved} onSave={saveRoleTemplate} />}
@@ -200,15 +193,16 @@ function Overview({ onNavigate }: { onNavigate: (tab: AdminTab) => void }) {
     { title: "Portfolio structure", copy: "3 demo brands and locations are configured.", status: "complete", tab: "locations" },
     { title: "ServiceTitan credentials", copy: "Add one isolated connection per tenant.", status: "demo", tab: "servicetitan" },
     { title: "Business-unit mapping", copy: "Map every ServiceTitan unit to a reporting division.", status: "needed", tab: "servicetitan" },
-    { title: "Budgets & KPI targets", copy: "Upload monthly budgets or connect a finance source.", status: "needed", tab: "metrics" },
+    { title: "Targets & revenue budgets", copy: "Publish location, trade, and service-line goals with effective dates.", status: "demo", tab: "targets" },
+    { title: "Governed KPI definitions", copy: "Confirm formulas, denominators, exclusions, owners, and lineage.", status: "needed", tab: "metrics" },
     { title: "GM layouts", copy: "Default role templates are available for customization.", status: "complete", tab: "layouts" },
     { title: "External data sources", copy: "Domo framework is ready; GA4 and phone connectors remain optional.", status: "demo", tab: "sources" },
   ];
   return <>
     <PageTitle eyebrow="Guided setup" title="Portfolio readiness" copy="A handoff-friendly checklist keeps every tenant configured the same way and makes missing dependencies visible." />
-    <div className="readiness-card"><div className="readiness-ring"><strong>33%</strong><span>ready</span></div><div><h2>2 of 6 setup groups complete</h2><p>The prototype is operating on labeled demo data. Complete the tenant connection and mapping steps before treating KPIs as operational actuals.</p><div className="readiness-bar"><span style={{width:"33%"}} /></div></div></div>
+    <div className="readiness-card"><div className="readiness-ring"><strong>29%</strong><span>ready</span></div><div><h2>2 of 7 setup groups complete</h2><p>The prototype is operating on labeled demo data. Complete the tenant connection, mappings, targets, and budget steps before treating KPIs as operational actuals.</p><div className="readiness-bar"><span style={{width:"29%"}} /></div></div></div>
     <div className="setup-grid">{steps.map((step) => <button className="setup-step" key={step.title} onClick={() => onNavigate(step.tab)}><span className={`step-icon ${step.status}`}>{step.status === "complete" ? <Check size={16} /> : step.status === "demo" ? <CircleAlert size={16} /> : <span />}</span><div><strong>{step.title}</strong><p>{step.copy}</p></div><span className={`setup-status ${step.status}`}>{step.status === "complete" ? "Complete" : step.status === "demo" ? "Demo only" : "Action needed"}</span><ChevronRight size={17} /></button>)}</div>
-    <div className="admin-grid-two"><section className="admin-card"><div className="card-title"><div><span>Operating model</span><h3>Configuration, not custom code</h3></div><Settings2 /></div><ul className="check-list"><li><CheckCircle2 />One deployment and schema across the portfolio</li><li><CheckCircle2 />Tenant-isolated credentials and data</li><li><CheckCircle2 />Per-brand mappings, targets, colors, and layouts</li><li><CheckCircle2 />Metric lineage visible to every GM</li></ul></section><section className="admin-card"><div className="card-title"><div><span>Prototype boundary</span><h3>What persists today</h3></div><LockKeyhole /></div><p className="card-copy">Card order, hidden cards, and custom demo metrics persist in this browser. The production phase moves configuration to Postgres with role-based authentication and an audit log.</p><div className="warning-note"><CircleAlert size={17} />Do not enter production secrets in this test deployment.</div></section></div>
+    <div className="admin-grid-two"><section className="admin-card"><div className="card-title"><div><span>Operating model</span><h3>Configuration, not custom code</h3></div><Settings2 /></div><ul className="check-list"><li><CheckCircle2 />One deployment and schema across the portfolio</li><li><CheckCircle2 />Tenant-isolated credentials and data</li><li><CheckCircle2 />Per-brand mappings, targets, colors, and layouts</li><li><CheckCircle2 />Metric lineage visible to every GM</li></ul></section><section className="admin-card"><div className="card-title"><div><span>Prototype boundary</span><h3>What persists today</h3></div><LockKeyhole /></div><p className="card-copy">Connection profiles, target rules, revenue budgets, card layouts, and custom demo metrics persist in this browser. Raw secrets are discarded. Production moves the same configuration concepts to Postgres with RBAC, encryption, and an audit log.</p><div className="warning-note"><CircleAlert size={17} />Do not enter production secrets in this test deployment.</div></section></div>
   </>;
 }
 
@@ -217,13 +211,6 @@ function Locations({ saved, onSave }: { saved: boolean; onSave: () => void }) {
     <div className="admin-toolbar"><div><strong>{locations.length} locations</strong><span> across {new Set(locations.map((item) => item.tenantId)).size} tenant configurations</span></div><button className="button primary"><Plus size={16} /> Add location</button></div>
     <div className="location-admin-list">{locations.map((location, index) => <section className="location-admin-card" key={location.id}><div className="location-card-head"><div className="brand-avatar" style={{background: location.accentDark, color: "white"}}>{location.initials}</div><div><h3>{location.brand}</h3><p>{location.location} · {location.timezone}</p></div><span className="connection-badge demo"><CircleAlert size={14} /> Demo data</span></div><div className="form-grid"><label>Display name<input defaultValue={location.brand} /></label><label>Location label<input defaultValue={location.location} /></label><label>ServiceTitan tenant<select defaultValue={location.tenantId}><option value={location.tenantId}>{location.tenantId}</option></select></label><label>Timezone<select defaultValue={location.timezone}><option>{location.timezone}</option><option>America/Chicago</option><option>America/Denver</option><option>America/Los_Angeles</option></select></label><label>Primary color<div className="color-input"><input type="color" defaultValue={location.accentDark} /><input defaultValue={location.accentDark} /></div></label><label>Accent color<div className="color-input"><input type="color" defaultValue={location.accent} /><input defaultValue={location.accent} /></div></label></div>{index === 0 && <div className="mapping-summary"><span><CheckCircle2 size={15} /> 6 reporting divisions</span><span><CircleAlert size={15} /> 2 unmapped business units</span><button onClick={() => undefined}>Review mapping</button></div>}</section>)}</div>
     <div className="sticky-save"><span>{saved ? <><CheckCircle2 size={16} /> Changes saved locally</> : "Unsaved prototype edits are browser-local"}</span><button className="button primary" onClick={onSave}><Save size={16} /> Save changes</button></div>
-  </>;
-}
-
-function ServiceTitanForm({ showSecret, setShowSecret, testState, testMessage, onSubmit }: { showSecret: boolean; setShowSecret: (value: boolean) => void; testState: string; testMessage: string; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <><PageTitle eyebrow="Core integration" title="ServiceTitan connections" copy="Keep credentials isolated by tenant. The production connector will sync normalized warehouse tables on a schedule rather than querying ServiceTitan during every dashboard load." />
-    <div className="integration-layout"><section className="admin-card integration-form"><div className="card-title"><div><span>Connection profile</span><h3>Sierra Home Services</h3></div><span className="connection-badge demo"><CircleAlert size={14} /> Validation only</span></div><form onSubmit={onSubmit}><div className="form-grid"><label>ServiceTitan tenant ID<input name="tenantId" placeholder="e.g. 1234567890" required /></label><label>Client ID<input name="clientId" placeholder="Application client ID" required /></label><label>App key<input name="appKey" placeholder="Application key" required /></label><label>Client secret<div className="password-input"><input type={showSecret ? "text" : "password"} placeholder="Not persisted in demo" /><button type="button" onClick={() => setShowSecret(!showSecret)}>{showSecret ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label></div><div className="form-help"><LockKeyhole size={16} /><span>In production, the secret is encrypted at rest and write-only after save. This prototype deliberately does not store it.</span></div><div className="form-actions"><button className="button secondary" type="submit" disabled={testState === "testing"}><RefreshCw className={testState === "testing" ? "spin" : ""} size={16} />{testState === "testing" ? "Validating…" : "Validate fields"}</button><button className="button primary" type="button" disabled><KeyRound size={16} /> Save encrypted connection</button></div>{testMessage && <div className={`test-result ${testState}`}>{testState === "ok" ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{testMessage}</div>}</form></section>
-    <aside><section className="admin-card"><div className="card-title"><div><span>Required after connection</span><h3>Mapping checklist</h3></div><BarChart3 /></div><div className="mapping-steps"><div><span>1</span><div><strong>Business units → divisions</strong><p>Normalize tenant naming without changing ServiceTitan.</p></div></div><div><span>2</span><div><strong>Job statuses & classes</strong><p>Define completed, canceled, opportunity, and recall.</p></div></div><div><span>3</span><div><strong>Membership tiers</strong><p>Map active, suspended, canceled, and recurring value.</p></div></div><div><span>4</span><div><strong>Employee roles</strong><p>Separate technician, CSR, dispatcher, and salesperson.</p></div></div></div></section><section className="admin-card sync-card"><Database /><div><strong>Recommended sync pattern</strong><p>Incremental API pulls every 15 minutes, nightly reconciliation, and visible freshness/confidence on every KPI.</p></div></section></aside></div>
   </>;
 }
 

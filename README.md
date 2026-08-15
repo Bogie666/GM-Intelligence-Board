@@ -12,7 +12,9 @@ This repository currently contains a polished **test build** with illustrative d
 - Drag/reorder and hide/restore cards per location and tab
 - Browser-local custom KPI builder in Admin → KPI Library
 - Admin role-template editor with per-tab KPI visibility, default ordering, renaming, reset, and save behavior
-- Admin setup checklist, tenant configuration, ServiceTitan field validation, source matrix, and role model
+- Admin setup checklist, browser-local multi-tenant ServiceTitan connection profiles, source matrix, and role model
+- Effective-dated location/trade/service-line KPI targets with draft, publish, archive, and target lineage
+- Versioned exact-location monthly revenue budgets that drive dashboard goals in the same browser
 - Server-only Domo OAuth/DataSet API scaffold with dataset allowlisting and CSV export support
 - Domo source configuration in Admin and the governed KPI builder
 - `/api/health` plus ServiceTitan and Domo integration-validation modes
@@ -42,16 +44,18 @@ npm run build
 
 ## Prototype persistence
 
-The test build stores only these non-sensitive presentation settings in browser `localStorage`:
+The test build stores these non-sensitive demo configurations in browser `localStorage`:
 
 - card order
 - hidden cards
 - custom demo KPIs
 - role-template KPI visibility and default ordering (`gmib.role-templates.v1`)
+- tenant/location ServiceTitan connection metadata with masked identifiers only (`gmib.servicetitan-connections.v1`)
+- effective-dated KPI target rules and monthly revenue budget versions (`gmib.target-budget.v1`)
 
-Saved changes to the **GM daily view** become the dashboard default immediately in the same browser. Individual GM drag/hide preferences remain a separate override layer.
+Published target and budget changes become the applicable dashboard goals immediately in the same browser. Saved changes to the **GM daily view** become the dashboard default. Individual GM drag/hide preferences remain a separate override layer.
 
-It does **not** persist credentials, tenant mappings, budgets, users, or API data. Production must use Postgres and encrypted server-side secret storage.
+It does **not** persist raw credentials, users, mappings, or API data. Credential inputs are discarded after masked metadata is generated. Production must use Postgres, authenticated Admin APIs, encrypted server-side secret storage, and audit events.
 
 ## Production architecture
 

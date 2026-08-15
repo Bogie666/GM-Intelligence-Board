@@ -23,8 +23,10 @@ export function metricAttainment(metric: Metric): number | null {
 export function metricStatus(metric: Metric): Status {
   if (metric.goal === undefined) return "neutral";
   const attainment = metricAttainment(metric) ?? 100;
-  if (attainment >= 100) return "good";
-  if (attainment >= (metric.warningAt ?? 90)) return "watch";
+  const warningFloor = metric.warningAt ?? 100;
+  const criticalFloor = metric.criticalAt ?? 90;
+  if (attainment >= warningFloor) return "good";
+  if (attainment >= criticalFloor) return "watch";
   return "critical";
 }
 

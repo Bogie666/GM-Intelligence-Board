@@ -39,6 +39,7 @@ const baseMetrics: Metric[] = [
   { id:"capacity-util", section:"appointments", title:"Capacity Utilization", actual:81.3, goal:90, prior:78.2, kind:"percent", source:"Derived", subtitle:"Booked hours ÷ available hours", sparkline:[74,75,77,79,80,82,81] },
 
   { id:"hvac-close", section:"sales", title:"HVAC Close Rate", actual:33, goal:42, prior:31, kind:"percent", source:"ServiceTitan", subtitle:"174 sold of 527 opportunities", sparkline:[28,29,30,31,32,33,33] },
+  { id:"hvac-maintenance-close", section:"sales", title:"HVAC Maintenance Close Rate", actual:58, goal:62, prior:56, kind:"percent", source:"ServiceTitan", subtitle:"Qualified maintenance opportunities sold", sparkline:[53,54,55,56,57,58,58] },
   { id:"plumbing-close", section:"sales", title:"Plumbing Close Rate", actual:47, goal:45, prior:43, kind:"percent", source:"ServiceTitan", subtitle:"46 sold of 98 opportunities", sparkline:[39,41,42,43,45,46,47] },
   { id:"hvac-ticket", section:"sales", title:"HVAC Sold Avg Ticket", actual:18663, goal:17500, prior:17840, kind:"currency", source:"ServiceTitan", subtitle:"Across sold replacement opportunities", sparkline:[16900,17200,17600,17900,18100,18400,18663] },
   { id:"revenue-per-opportunity", section:"sales", title:"Revenue per Opportunity", actual:6322, goal:7200, prior:5980, kind:"currency", source:"Derived", subtitle:"Sold revenue ÷ all opportunities", sparkline:[5400,5600,5800,5900,6100,6200,6322] },
