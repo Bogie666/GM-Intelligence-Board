@@ -22,13 +22,14 @@ Postgres
   ├─ Tenant configuration
   ├─ ServiceTitan normalized warehouse
   ├─ KPI targets / budgets
-  ├─ External-source facts
+  ├─ Domo / external-source facts
   ├─ Materialized KPI snapshots
   └─ Users, roles, layouts, audit events
         │
 Scheduled workers / queues
   ├─ ServiceTitan incremental sync (15 minutes)
   ├─ Nightly reconciliation
+  ├─ Domo financial / historical dataset sync
   ├─ GA4 / phone / booking-source sync
   └─ KPI materialization + source confidence
 ```
@@ -59,6 +60,18 @@ Every data-bearing table should include `tenant_id`; location-grain tables shoul
 5. Record unmapped row counts instead of silently classifying them.
 6. Reconcile recent history nightly because source records can be edited after completion.
 7. Materialize KPI snapshots so dashboard loads do not depend on live API latency.
+
+## Domo ingestion
+
+1. Authenticate server-side at `https://api.domo.com` using OAuth client credentials and the `data` scope.
+2. Restrict detail and export reads to `DOMO_ALLOWED_DATASET_IDS`.
+3. Extract approved datasets on a schedule; do not call Domo from dashboard requests.
+4. Preserve source dataset ID, extraction timestamp, Domo `dataCurrentAt`, row count, and schema fingerprint.
+5. Normalize center, period, account/metric, currency, actual/budget, and source-version fields through governed mappings.
+6. Reconcile row counts and financial totals before promoting a snapshot.
+7. Mark stale, incomplete, or unmapped snapshots as degraded/unavailable rather than zero.
+
+See [`DOMO-INTEGRATION.md`](DOMO-INTEGRATION.md) for the implemented connector boundary and environment contract.
 
 ## Metric contract
 

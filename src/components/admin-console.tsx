@@ -40,12 +40,14 @@ import { createKpiId, customKpiToMetric, duplicateCustomKpiDefinition, evaluateC
 import { KpiWizard } from "@/components/kpi-wizard";
 import type { LayoutTemplate, Metric, MetricSection } from "@/lib/types";
 
-type AdminTab = "overview" | "locations" | "servicetitan" | "metrics" | "layouts" | "sources";
+type AdminTab = "overview" | "locations" | "servicetitan" | "domo" | "metrics" | "layouts" | "sources";
+type TestState = "idle" | "testing" | "ok" | "error";
 
 const tabs: { id: AdminTab; label: string; icon: typeof Settings2 }[] = [
   { id: "overview", label: "Setup overview", icon: Settings2 },
   { id: "locations", label: "Brands & locations", icon: Building2 },
   { id: "servicetitan", label: "ServiceTitan", icon: Database },
+  { id: "domo", label: "Domo", icon: FileSpreadsheet },
   { id: "metrics", label: "KPI library", icon: SlidersHorizontal },
   { id: "layouts", label: "Layouts & access", icon: LayoutGrid },
   { id: "sources", label: "Data sources", icon: Webhook },
@@ -53,7 +55,8 @@ const tabs: { id: AdminTab; label: string; icon: typeof Settings2 }[] = [
 
 const sourceRows = [
   ["Completed revenue", "ServiceTitan", "Available", "Jobs + invoices, filtered by mapped business units"],
-  ["Budgets / targets", "CSV or finance system", "Configuration", "Not a dependable standard ServiceTitan API source"],
+  ["Historical financial actuals", "Domo", "Framework ready", "OAuth client, dataset metadata, allowlisting, and CSV export are scaffolded"],
+  ["Budgets / targets", "Domo, CSV, or finance system", "Configuration", "Not a dependable standard ServiceTitan API source"],
   ["Appointments & capacity", "ServiceTitan", "Available", "Requires status, business unit, and technician mapping"],
   ["Sales close rate", "ServiceTitan", "Available", "Tenant definition required for opportunity and sold status"],
   ["Memberships", "ServiceTitan", "Available", "Tier names, active statuses, cancels, and renewals vary"],
@@ -67,8 +70,10 @@ const sourceRows = [
 export function AdminConsole() {
   const [tab, setTab] = useState<AdminTab>("overview");
   const [showSecret, setShowSecret] = useState(false);
-  const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [testState, setTestState] = useState<TestState>("idle");
   const [testMessage, setTestMessage] = useState("");
+  const [domoTestState, setDomoTestState] = useState<TestState>("idle");
+  const [domoTestMessage, setDomoTestMessage] = useState("");
   const [customKpiStore, setCustomKpiStore] = useState<CustomKpiStore>({ schemaVersion: 2, definitions: [] });
   const [editingKpi, setEditingKpi] = useState<CustomKpiDefinition | undefined>();
   const [showKpiWizard, setShowKpiWizard] = useState(false);
@@ -93,6 +98,24 @@ export function AdminConsole() {
     const response = await fetch("/api/integrations/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const result = await response.json();
     setTestState(response.ok ? "ok" : "error"); setTestMessage(result.message);
+  }
+
+  async function testDomoConnection() {
+    setDomoTestState("testing");
+    setDomoTestMessage("");
+    try {
+      const response = await fetch("/api/integrations/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "domo" }),
+      });
+      const result = await response.json();
+      setDomoTestState(result.ok ? "ok" : "error");
+      setDomoTestMessage(result.message ?? "Domo validation returned no message.");
+    } catch {
+      setDomoTestState("error");
+      setDomoTestMessage("Domo validation endpoint could not be reached.");
+    }
   }
 
   function persistCustomDefinitions(definitions: CustomKpiDefinition[]) {
@@ -158,6 +181,7 @@ export function AdminConsole() {
           {tab === "overview" && <Overview onNavigate={setTab} />}
           {tab === "locations" && <Locations saved={saved} onSave={saveConfig} />}
           {tab === "servicetitan" && <ServiceTitanForm showSecret={showSecret} setShowSecret={setShowSecret} testState={testState} testMessage={testMessage} onSubmit={testConnection} />}
+          {tab === "domo" && <DomoIntegration testState={domoTestState} testMessage={domoTestMessage} onTest={testDomoConnection} />}
           {tab === "metrics" && <MetricLibrary definitions={customKpiStore.definitions} templates={roleTemplates} editing={editingKpi} showWizard={showKpiWizard} onCreate={() => { setEditingKpi(undefined); setShowKpiWizard(true); }} onEdit={(definition) => { setEditingKpi(definition); setShowKpiWizard(true); }} onCancel={() => { setEditingKpi(undefined); setShowKpiWizard(false); }} onSave={saveCustomKpi} onArchive={archiveCustomKpi} onDelete={deleteDraftKpi} onDuplicate={duplicateCustomKpi} />}
           {tab === "layouts" && <Layouts templates={roleTemplates} customDefinitions={customKpiStore.definitions} saved={templateSaved} onSave={saveRoleTemplate} />}
           {tab === "sources" && <Sources />}
@@ -178,7 +202,7 @@ function Overview({ onNavigate }: { onNavigate: (tab: AdminTab) => void }) {
     { title: "Business-unit mapping", copy: "Map every ServiceTitan unit to a reporting division.", status: "needed", tab: "servicetitan" },
     { title: "Budgets & KPI targets", copy: "Upload monthly budgets or connect a finance source.", status: "needed", tab: "metrics" },
     { title: "GM layouts", copy: "Default role templates are available for customization.", status: "complete", tab: "layouts" },
-    { title: "External data sources", copy: "GA4 and phone-system connectors remain optional.", status: "demo", tab: "sources" },
+    { title: "External data sources", copy: "Domo framework is ready; GA4 and phone connectors remain optional.", status: "demo", tab: "sources" },
   ];
   return <>
     <PageTitle eyebrow="Guided setup" title="Portfolio readiness" copy="A handoff-friendly checklist keeps every tenant configured the same way and makes missing dependencies visible." />
@@ -200,6 +224,36 @@ function ServiceTitanForm({ showSecret, setShowSecret, testState, testMessage, o
   return <><PageTitle eyebrow="Core integration" title="ServiceTitan connections" copy="Keep credentials isolated by tenant. The production connector will sync normalized warehouse tables on a schedule rather than querying ServiceTitan during every dashboard load." />
     <div className="integration-layout"><section className="admin-card integration-form"><div className="card-title"><div><span>Connection profile</span><h3>Sierra Home Services</h3></div><span className="connection-badge demo"><CircleAlert size={14} /> Validation only</span></div><form onSubmit={onSubmit}><div className="form-grid"><label>ServiceTitan tenant ID<input name="tenantId" placeholder="e.g. 1234567890" required /></label><label>Client ID<input name="clientId" placeholder="Application client ID" required /></label><label>App key<input name="appKey" placeholder="Application key" required /></label><label>Client secret<div className="password-input"><input type={showSecret ? "text" : "password"} placeholder="Not persisted in demo" /><button type="button" onClick={() => setShowSecret(!showSecret)}>{showSecret ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label></div><div className="form-help"><LockKeyhole size={16} /><span>In production, the secret is encrypted at rest and write-only after save. This prototype deliberately does not store it.</span></div><div className="form-actions"><button className="button secondary" type="submit" disabled={testState === "testing"}><RefreshCw className={testState === "testing" ? "spin" : ""} size={16} />{testState === "testing" ? "Validating…" : "Validate fields"}</button><button className="button primary" type="button" disabled><KeyRound size={16} /> Save encrypted connection</button></div>{testMessage && <div className={`test-result ${testState}`}>{testState === "ok" ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{testMessage}</div>}</form></section>
     <aside><section className="admin-card"><div className="card-title"><div><span>Required after connection</span><h3>Mapping checklist</h3></div><BarChart3 /></div><div className="mapping-steps"><div><span>1</span><div><strong>Business units → divisions</strong><p>Normalize tenant naming without changing ServiceTitan.</p></div></div><div><span>2</span><div><strong>Job statuses & classes</strong><p>Define completed, canceled, opportunity, and recall.</p></div></div><div><span>3</span><div><strong>Membership tiers</strong><p>Map active, suspended, canceled, and recurring value.</p></div></div><div><span>4</span><div><strong>Employee roles</strong><p>Separate technician, CSR, dispatcher, and salesperson.</p></div></div></div></section><section className="admin-card sync-card"><Database /><div><strong>Recommended sync pattern</strong><p>Incremental API pulls every 15 minutes, nightly reconciliation, and visible freshness/confidence on every KPI.</p></div></section></aside></div>
+  </>;
+}
+
+function DomoIntegration({ testState, testMessage, onTest }: { testState: TestState; testMessage: string; onTest: () => void }) {
+  return <>
+    <PageTitle eyebrow="Financial data integration" title="Domo datasets" copy="Use Domo as a governed historical and financial source without exposing OAuth credentials or querying Domo during every dashboard load." />
+    <div className="integration-layout">
+      <section className="admin-card integration-form">
+        <div className="card-title"><div><span>Server-side connector</span><h3>Domo DataSet API</h3></div><span className="connection-badge ready"><CheckCircle2 size={14} /> Framework ready</span></div>
+        <div className="form-grid">
+          <label>API base URL<input readOnly value="https://api.domo.com" /></label>
+          <label>OAuth grant<input readOnly value="Client credentials · data scope" /></label>
+          <label>Dataset access<input readOnly value="Explicit server-side allowlist" /></label>
+          <label>Initial extraction<input readOnly value="Metadata + CSV export" /></label>
+        </div>
+        <div className="form-help"><LockKeyhole size={16} /><span>The browser never receives the Domo client secret or access token. Dataset reads are denied unless the ID appears in <code>DOMO_ALLOWED_DATASET_IDS</code>.</span></div>
+        <div className="form-actions"><button className="button secondary" type="button" disabled={testState === "testing"} onClick={onTest}><RefreshCw className={testState === "testing" ? "spin" : ""} size={16} />{testState === "testing" ? "Checking…" : "Check server configuration"}</button></div>
+        {testMessage && <div className={`test-result ${testState}`}>{testState === "ok" ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{testMessage}</div>}
+      </section>
+      <aside>
+        <section className="admin-card"><div className="card-title"><div><span>Required environment</span><h3>OAuth and data boundary</h3></div><KeyRound /></div><ul className="env-list"><li><code>DOMO_CLIENT_ID</code><span>OAuth client ID with the Domo data scope</span></li><li><code>DOMO_CLIENT_SECRET</code><span>Server-only OAuth secret</span></li><li><code>DOMO_ALLOWED_DATASET_IDS</code><span>Comma-separated dataset IDs approved for this app</span></li><li><code>Authenticated admin RBAC</code><span>Required before any live connection-test or dataset-discovery endpoint is enabled</span></li></ul></section>
+        <section className="admin-card sync-card"><FileSpreadsheet /><div><strong>Recommended Domo pattern</strong><p>Pull allowlisted datasets on a schedule, normalize center/date/account dimensions, reconcile row counts and totals, then materialize KPI snapshots with source freshness.</p></div></section>
+      </aside>
+    </div>
+    <div className="domo-capability-grid">
+      <section className="admin-card"><Database /><div><strong>Dataset catalog</strong><p>List and inspect Domo dataset metadata through OAuth.</p></div></section>
+      <section className="admin-card"><FileSpreadsheet /><div><strong>Historical extracts</strong><p>Export allowlisted dataset rows as CSV for controlled ingestion.</p></div></section>
+      <section className="admin-card"><ShieldCheck /><div><strong>Least privilege</strong><p>Deny dataset reads unless the dataset ID is explicitly approved.</p></div></section>
+      <section className="admin-card"><RefreshCw /><div><strong>Future sync worker</strong><p>Designed for scheduled snapshots, reconciliation, and stale-source alerts.</p></div></section>
+    </div>
   </>;
 }
 
@@ -311,5 +365,5 @@ function Layouts({ templates, customDefinitions, saved, onSave }: { templates: L
 }
 
 function Sources() {
-  return <><PageTitle eyebrow="Source coverage" title="Data-source readiness" copy="Not every requested KPI belongs in ServiceTitan. This matrix prevents placeholder data from silently becoming an operational metric." /><div className="source-summary"><div><Database/><span><strong>5</strong> ServiceTitan / derived</span></div><div><CircleAlert/><span><strong>3</strong> partial or quality-dependent</span></div><div><Webhook/><span><strong>2</strong> external integrations</span></div></div><section className="admin-card source-matrix"><div className="table-scroll"><table><thead><tr><th>KPI family</th><th>Primary source</th><th>Readiness</th><th>Implementation note</th></tr></thead><tbody>{sourceRows.map((row)=><tr key={row[0]}><td><strong>{row[0]}</strong></td><td>{row[1]}</td><td><span className={`readiness-tag ${row[2].toLowerCase().replaceAll(" ","-")}`}>{row[2]}</span></td><td>{row[3]}</td></tr>)}</tbody></table></div></section><div className="admin-grid-two"><section className="admin-card"><div className="card-title"><div><span>Budget onboarding</span><h3>CSV template first</h3></div><FileSpreadsheet /></div><p className="card-copy">A governed monthly upload is safer than pretending ServiceTitan contains financial budgets. Later, replace the import with an ERP connector without changing dashboard definitions.</p><button className="button secondary" disabled>Download template · production phase</button></section><section className="admin-card"><div className="card-title"><div><span>Integration contract</span><h3>Every source reports confidence</h3></div><ShieldCheck /></div><ul className="check-list"><li><CheckCircle2 />Freshness timestamp</li><li><CheckCircle2 />Completeness and unmapped-record count</li><li><CheckCircle2 />Last successful reconciliation</li><li><CheckCircle2 />Visible degraded-state messaging</li></ul></section></div></>;
+  return <><PageTitle eyebrow="Source coverage" title="Data-source readiness" copy="Not every requested KPI belongs in ServiceTitan. This matrix prevents placeholder data from silently becoming an operational metric." /><div className="source-summary"><div><Database/><span><strong>5</strong> ServiceTitan / derived</span></div><div><CircleAlert/><span><strong>3</strong> partial or quality-dependent</span></div><div><Webhook/><span><strong>3</strong> external or framework</span></div></div><section className="admin-card source-matrix"><div className="table-scroll"><table><thead><tr><th>KPI family</th><th>Primary source</th><th>Readiness</th><th>Implementation note</th></tr></thead><tbody>{sourceRows.map((row)=><tr key={row[0]}><td><strong>{row[0]}</strong></td><td>{row[1]}</td><td><span className={`readiness-tag ${row[2].toLowerCase().replaceAll(" ","-")}`}>{row[2]}</span></td><td>{row[3]}</td></tr>)}</tbody></table></div></section><div className="admin-grid-two"><section className="admin-card"><div className="card-title"><div><span>Financial onboarding</span><h3>Domo dataset or governed CSV</h3></div><FileSpreadsheet /></div><p className="card-copy">Use Domo for approved historical and financial datasets when available. Keep CSV as a controlled fallback, with the same center/date/account mapping so dashboard definitions do not change with the transport.</p><button className="button secondary" disabled>Configure Domo mapping · production phase</button></section><section className="admin-card"><div className="card-title"><div><span>Integration contract</span><h3>Every source reports confidence</h3></div><ShieldCheck /></div><ul className="check-list"><li><CheckCircle2 />Freshness timestamp</li><li><CheckCircle2 />Completeness and unmapped-record count</li><li><CheckCircle2 />Last successful reconciliation</li><li><CheckCircle2 />Visible degraded-state messaging</li></ul></section></div></>;
 }

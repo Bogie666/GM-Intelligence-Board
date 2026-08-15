@@ -5,8 +5,9 @@
 | KPI family | Preferred source | Feasibility | Main limitation / decision |
 |---|---|---:|---|
 | Completed revenue | ServiceTitan jobs/invoices | High | Revenue recognition, adjustments, taxes, and excluded business units must be defined |
+| Historical financial actuals | Domo approved datasets | High after mapping | Dataset ID, center/date/account grain, sign convention, and reconciliation totals must be governed |
 | Revenue by trade/division | ServiceTitan + BU mapping | High | Each tenant uses different business-unit vocabulary |
-| Budgets and targets | CSV / ERP / planning tool | Medium | Standard ServiceTitan APIs are not a dependable portfolio budget source |
+| Budgets and targets | Domo / CSV / ERP / planning tool | Medium | Standard ServiceTitan APIs are not a dependable portfolio budget source |
 | Actual + committed pipeline | ServiceTitan invoices + won estimates + scheduled jobs | High | Must define sold estimate join, period window, and completed-job exclusion |
 | Month/year forecast | Derived | Medium | Requires governed model, remaining workdays, seasonality, capacity, and pipeline |
 | Appointments | ServiceTitan | High | Status, cancellation, recall, and department mappings vary |
@@ -25,7 +26,16 @@
 
 ## Required tenant setup decisions
 
-### Financial
+### Domo financial datasets
+
+- approved dataset ID and business owner
+- center/location identifier mapping
+- period/date and fiscal-calendar interpretation
+- account/metric and actual/budget column mapping
+- currency, sign, duplicate, and restatement rules
+- expected refresh cadence, stale threshold, and reconciliation control total
+
+### ServiceTitan
 
 - completed vs invoiced vs collected revenue
 - gross vs net of discounts, taxes, refunds, financing fees

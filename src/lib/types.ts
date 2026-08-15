@@ -1,7 +1,7 @@
 export type Status = "good" | "watch" | "critical" | "neutral";
 export type MetricKind = "currency" | "number" | "percent" | "ratio";
 export type MetricSection = "executive" | "revenue" | "calls" | "appointments" | "sales" | "membership";
-export type SourceKey = "ServiceTitan" | "Budget" | "GA4" | "Call System" | "Derived" | "Custom";
+export type SourceKey = "ServiceTitan" | "Domo" | "Budget" | "GA4" | "Call System" | "Derived" | "Custom";
 
 export interface PlaybookStep {
   title: string;

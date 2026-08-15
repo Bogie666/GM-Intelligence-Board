@@ -20,6 +20,15 @@ A future portfolio administrator should onboard and maintain a brand without eng
 12. Invite users and assign tenant/location roles.
 13. Publish the GM layout only after data confidence is acceptable.
 
+### Domo dataset onboarding
+
+1. Create a Domo OAuth client with the `data` scope and store its credentials only in encrypted server configuration.
+2. Add approved IDs to `DOMO_ALLOWED_DATASET_IDS`; do not grant the app an open-ended dataset catalog in the public prototype.
+3. Record the dataset owner, grain, center/date/account mappings, currency/sign rules, and refresh cadence.
+4. Run a metadata/schema check and controlled historical extract.
+5. Reconcile source row counts and financial totals before enabling any KPI.
+6. Configure stale thresholds and alerts, then materialize snapshots for dashboard reads.
+
 ## Routine maintenance
 
 ### Daily automated

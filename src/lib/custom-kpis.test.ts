@@ -98,6 +98,26 @@ describe("custom KPI governance", () => {
     expect(result?.value).toBeUndefined();
   });
 
+  it("requires a dataset ID for Domo KPIs and preserves Domo lineage", () => {
+    const missingDataset = validDraft({
+      type: "external",
+      provider: "Domo",
+      externalMetricKey: "revenue_actual",
+      manualValue: 100,
+      asOf: "2026-08-14",
+      leftMetricId: undefined,
+      rightMetricId: undefined,
+      operation: undefined,
+    });
+    const invalid = runCustomKpiValidation(missingDataset, catalog, []);
+    expect(invalid.issues.some((issue) => issue.code === "domo-dataset" && issue.severity === "error")).toBe(true);
+
+    const definition = { ...missingDataset, externalDatasetId: "financial-history" };
+    const valid = runCustomKpiValidation(definition, catalog, []);
+    expect(valid.issues.some((issue) => issue.code === "domo-dataset")).toBe(false);
+    expect(evaluateCustomKpis([definition], catalog).get(definition.id)?.source).toBe("Domo");
+  });
+
   it("blocks publication when required observation data is absent", () => {
     const definition = validDraft({ type: "manual", manualValue: undefined, asOf: undefined, leftMetricId: undefined, rightMetricId: undefined, operation: undefined });
     const validation = runCustomKpiValidation(definition, catalog, []);

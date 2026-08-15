@@ -8,7 +8,7 @@ export type CustomKpiStatus = "draft" | "published" | "archived";
 export type CustomKpiDirection = "higher" | "lower" | "informational";
 export type CustomKpiScopeMode = "portfolio" | "selected-locations";
 export type FormulaOperation = "add" | "subtract" | "multiply" | "divide" | "percent";
-export type ExternalProvider = "GA4" | "Google Business Profile" | "Call System" | "Finance" | "Other";
+export type ExternalProvider = "Domo" | "GA4" | "Google Business Profile" | "Call System" | "Finance" | "Other";
 export type CustomKpiStep = "definition" | "scope" | "source" | "calculation" | "validate" | "publish";
 
 export interface ValidationIssue {
@@ -43,6 +43,7 @@ export interface CustomKpiDefinition {
   roles: string[];
   catalogMetricId?: string;
   provider?: ExternalProvider;
+  externalDatasetId?: string;
   externalMetricKey?: string;
   refreshCadence?: "daily" | "weekly" | "monthly" | "ad-hoc";
   staleAfterHours?: number;
@@ -167,6 +168,7 @@ function applyOperation(left: number, operation: FormulaOperation, right: number
 }
 
 function providerToSource(provider?: ExternalProvider): SourceKey {
+  if (provider === "Domo") return "Domo";
   if (provider === "GA4") return "GA4";
   if (provider === "Call System") return "Call System";
   if (provider === "Finance") return "Budget";
@@ -263,8 +265,9 @@ export function validateCustomKpiStep(definition: CustomKpiDefinition, step: Cus
     if (definition.type === "catalog" && !definition.catalogMetricId) add("catalog-source", "error", "Choose the governed KPI this variant inherits.");
     if (definition.type === "external") {
       if (!definition.provider) add("provider", "error", "Choose an external provider.");
+      if (definition.provider === "Domo" && !definition.externalDatasetId?.trim()) add("domo-dataset", "error", "Enter the Domo dataset ID; the server allowlist will be enforced during ingestion.");
       if (!definition.externalMetricKey?.trim()) add("external-key", "error", "Enter the external metric or event key.");
-      add("external-demo", "warning", "The connector is not active; this test build will use a clearly labeled manual snapshot.");
+      add("external-demo", "warning", definition.provider === "Domo" ? "The Domo connector framework is installed; this test build still uses a clearly labeled manual KPI snapshot until field mapping and materialization are enabled." : "The connector is not active; this test build will use a clearly labeled manual snapshot.");
     }
     if (definition.type === "manual" && !definition.refreshCadence) add("cadence", "error", "Choose how often the value must be updated.");
   }

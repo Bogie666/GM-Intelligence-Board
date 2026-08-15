@@ -13,7 +13,9 @@ This repository currently contains a polished **test build** with illustrative d
 - Browser-local custom KPI builder in Admin → KPI Library
 - Admin role-template editor with per-tab KPI visibility, default ordering, renaming, reset, and save behavior
 - Admin setup checklist, tenant configuration, ServiceTitan field validation, source matrix, and role model
-- `/api/health` and a validation-only ServiceTitan integration endpoint
+- Server-only Domo OAuth/DataSet API scaffold with dataset allowlisting and CSV export support
+- Domo source configuration in Admin and the governed KPI builder
+- `/api/health` plus ServiceTitan and Domo integration-validation modes
 - Responsive desktop, tablet, and mobile layouts
 
 > All displayed values are labeled demo data. Do not enter production credentials in this build.
@@ -26,6 +28,8 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+Copy `.env.example` to `.env.local` only when configuring the server-side Domo connector. Never use `NEXT_PUBLIC_*` for Domo credentials.
 
 ## Quality gates
 
@@ -56,12 +60,13 @@ See:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/KPI-DATA-SOURCE-MATRIX.md`](docs/KPI-DATA-SOURCE-MATRIX.md)
 - [`docs/HANDOFF-AND-OPERATIONS.md`](docs/HANDOFF-AND-OPERATIONS.md)
+- [`docs/DOMO-INTEGRATION.md`](docs/DOMO-INTEGRATION.md)
 
 ## Recommended production phases
 
 1. **Foundation:** Postgres schema, auth/RBAC, encrypted credentials, audit log.
 2. **ServiceTitan onboarding:** credentials, business-unit mapping, status mapping, warehouse sync, reconciliation.
-3. **Finance controls:** governed budget import, targets, workday calendars, forecast definitions.
+3. **Finance controls:** governed Domo/CSV ingestion, budgets, targets, workday calendars, forecast definitions.
 4. **External sources:** GA4, phone/CCaaS, web booking/chat events, attribution deduplication.
 5. **Portfolio operations:** cross-brand rollups, alerts, exports, setup health, source confidence, support runbooks.
 
@@ -74,6 +79,8 @@ Every ServiceTitan tenant must have:
 - role-scoped access to assigned brands/locations
 - no credentials returned to browser clients
 - audit events for connection, mapping, budget, target, and user changes
+
+Every Domo connection must remain server-only, restrict reads to approved dataset IDs, and materialize reconciled snapshots rather than making dashboard loads depend on the live Domo API.
 
 ## Repository status
 
