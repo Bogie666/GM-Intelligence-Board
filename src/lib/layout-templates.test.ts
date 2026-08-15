@@ -21,6 +21,14 @@ describe("role template configuration", () => {
     expect(normalizeRoleTemplates(saved)[0].sections.executive).toEqual(["revenue-mtd"]);
   });
 
+  it("preserves published custom KPI IDs supplied by the catalog", () => {
+    const saved = [{
+      ...defaultRoleTemplates[0],
+      sections: { ...defaultRoleTemplates[0].sections, executive: ["revenue-mtd", "custom-reviewed-kpi"] },
+    }];
+    expect(normalizeRoleTemplates(saved, ["custom-reviewed-kpi"])[0].sections.executive).toEqual(["revenue-mtd", "custom-reviewed-kpi"]);
+  });
+
   it("restores defaults from malformed browser data", () => {
     expect(normalizeRoleTemplates({})).toEqual(defaultRoleTemplates);
   });

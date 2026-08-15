@@ -50,13 +50,13 @@ export const defaultRoleTemplates: LayoutTemplate[] = [
   },
 ];
 
-export function normalizeRoleTemplates(value: unknown): LayoutTemplate[] {
+export function normalizeRoleTemplates(value: unknown, customMetricIds: string[] = []): LayoutTemplate[] {
   if (!Array.isArray(value)) return defaultRoleTemplates.map(cloneTemplate);
   return defaultRoleTemplates.map((fallback) => {
     const saved = value.find((item) => item && typeof item === "object" && "id" in item && item.id === fallback.id) as Partial<LayoutTemplate> | undefined;
     const sections = metricSections.reduce((result, section) => {
       const savedIds = saved?.sections?.[section];
-      const validIds = metricIdsBySection[section];
+      const validIds = [...metricIdsBySection[section], ...customMetricIds];
       result[section] = Array.isArray(savedIds)
         ? savedIds.filter((id): id is string => typeof id === "string" && validIds.includes(id))
         : [...fallback.sections[section]];

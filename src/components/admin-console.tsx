@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  Archive,
   ArrowLeft,
   BarChart3,
+  Copy,
   Building2,
   Check,
   CheckCircle2,
@@ -17,6 +19,7 @@ import {
   KeyRound,
   LayoutGrid,
   LockKeyhole,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -30,10 +33,12 @@ import {
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
 import { cloneTemplate, defaultRoleTemplates, metricSections, moveTemplateMetric, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
-import type { CustomMetricInput, LayoutTemplate, Metric, MetricKind, MetricSection, SourceKey } from "@/lib/types";
+import { createKpiId, customKpiToMetric, duplicateCustomKpiDefinition, evaluateCustomKpis, readCustomKpiStore, writeCustomKpiStore, type CustomKpiDefinition, type CustomKpiStore } from "@/lib/custom-kpis";
+import { KpiWizard } from "@/components/kpi-wizard";
+import type { LayoutTemplate, Metric, MetricSection } from "@/lib/types";
 
 type AdminTab = "overview" | "locations" | "servicetitan" | "metrics" | "layouts" | "sources";
 
@@ -59,23 +64,24 @@ const sourceRows = [
   ["Forecast", "Derived", "Available", "App-calculated using actuals, pipeline, seasonality, and remaining workdays"],
 ];
 
-const defaultMetricForm = { title: "", section: "executive" as MetricSection, source: "Custom" as SourceKey, actual: "", goal: "", kind: "number" as MetricKind, subtitle: "Manually maintained KPI" };
-
 export function AdminConsole() {
   const [tab, setTab] = useState<AdminTab>("overview");
   const [showSecret, setShowSecret] = useState(false);
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [testMessage, setTestMessage] = useState("");
-  const [customMetrics, setCustomMetrics] = useState<CustomMetricInput[]>([]);
+  const [customKpiStore, setCustomKpiStore] = useState<CustomKpiStore>({ schemaVersion: 2, definitions: [] });
+  const [editingKpi, setEditingKpi] = useState<CustomKpiDefinition | undefined>();
+  const [showKpiWizard, setShowKpiWizard] = useState(false);
   const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
-  const [metricForm, setMetricForm] = useState(defaultMetricForm);
   const [saved, setSaved] = useState(false);
   const [templateSaved, setTemplateSaved] = useState(false);
 
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
-      try { setCustomMetrics(JSON.parse(localStorage.getItem("gmib.custom-metrics.v1") ?? "[]")); } catch { /* safe default */ }
-      try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"))); } catch { setRoleTemplates(normalizeRoleTemplates([])); }
+      const store = readCustomKpiStore(localStorage, new Date().toISOString());
+      setCustomKpiStore(store);
+      const customIds = store.definitions.filter((item) => item.status === "published").map((item) => item.id);
+      try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"), customIds)); } catch { setRoleTemplates(normalizeRoleTemplates([], customIds)); }
     }, 0);
     return () => window.clearTimeout(hydrate);
   }, []);
@@ -89,24 +95,44 @@ export function AdminConsole() {
     setTestState(response.ok ? "ok" : "error"); setTestMessage(result.message);
   }
 
-  function addMetric(event: FormEvent) {
-    event.preventDefault();
-    const next: CustomMetricInput = {
-      id: `custom-${Date.now()}`,
-      title: metricForm.title,
-      section: metricForm.section,
-      source: metricForm.source,
-      actual: Number(metricForm.actual),
-      goal: metricForm.goal ? Number(metricForm.goal) : undefined,
-      kind: metricForm.kind,
-      subtitle: metricForm.subtitle,
-    };
-    const updated = [...customMetrics, next];
-    setCustomMetrics(updated); localStorage.setItem("gmib.custom-metrics.v1", JSON.stringify(updated)); setMetricForm(defaultMetricForm);
+  function persistCustomDefinitions(definitions: CustomKpiDefinition[]) {
+    const next = { ...customKpiStore, schemaVersion: 2 as const, definitions };
+    setCustomKpiStore(next);
+    writeCustomKpiStore(localStorage, next);
   }
-  function deleteMetric(id: string) {
-    const updated = customMetrics.filter((metric) => metric.id !== id);
-    setCustomMetrics(updated); localStorage.setItem("gmib.custom-metrics.v1", JSON.stringify(updated));
+  function saveCustomKpi(definition: CustomKpiDefinition) {
+    const definitions = customKpiStore.definitions.some((item) => item.id === definition.id)
+      ? customKpiStore.definitions.map((item) => item.id === definition.id ? definition : item)
+      : [...customKpiStore.definitions, definition];
+    persistCustomDefinitions(definitions);
+    if (definition.status === "published") {
+      const updatedTemplates = roleTemplates.map((template) => {
+        const sections = Object.fromEntries(metricSections.map((section) => [section, template.sections[section].filter((id) => id !== definition.id)])) as LayoutTemplate["sections"];
+        if (definition.templateIds.includes(template.id)) sections[definition.section] = [...sections[definition.section], definition.id];
+        return { ...template, sections, updatedAt: new Date().toISOString() };
+      });
+      setRoleTemplates(updatedTemplates);
+      localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+    }
+    setEditingKpi(undefined);
+    setShowKpiWizard(false);
+  }
+  function archiveCustomKpi(id: string) {
+    if (!window.confirm("Archive this KPI? It will be removed from assigned dashboards but retained in the browser-local catalog.")) return;
+    const definitions = customKpiStore.definitions.map((item) => item.id === id ? { ...item, status: "archived" as const, updatedAt: new Date().toISOString() } : item);
+    persistCustomDefinitions(definitions);
+    const updatedTemplates = roleTemplates.map((template) => ({ ...template, sections: Object.fromEntries(metricSections.map((section) => [section, template.sections[section].filter((metricId) => metricId !== id)])) as LayoutTemplate["sections"] }));
+    setRoleTemplates(updatedTemplates);
+    localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+  }
+  function deleteDraftKpi(id: string) {
+    if (!window.confirm("Delete this unpublished draft? This cannot be undone.")) return;
+    persistCustomDefinitions(customKpiStore.definitions.filter((item) => item.id !== id));
+  }
+  function duplicateCustomKpi(definition: CustomKpiDefinition) {
+    const now = new Date().toISOString();
+    setEditingKpi(duplicateCustomKpiDefinition(definition, createKpiId(), now));
+    setShowKpiWizard(true);
   }
   function saveConfig() { setSaved(true); window.setTimeout(() => setSaved(false), 1800); }
   function saveRoleTemplate(template: LayoutTemplate) {
@@ -132,8 +158,8 @@ export function AdminConsole() {
           {tab === "overview" && <Overview onNavigate={setTab} />}
           {tab === "locations" && <Locations saved={saved} onSave={saveConfig} />}
           {tab === "servicetitan" && <ServiceTitanForm showSecret={showSecret} setShowSecret={setShowSecret} testState={testState} testMessage={testMessage} onSubmit={testConnection} />}
-          {tab === "metrics" && <MetricLibrary customMetrics={customMetrics} form={metricForm} setForm={setMetricForm} onAdd={addMetric} onDelete={deleteMetric} />}
-          {tab === "layouts" && <Layouts templates={roleTemplates} saved={templateSaved} onSave={saveRoleTemplate} />}
+          {tab === "metrics" && <MetricLibrary definitions={customKpiStore.definitions} templates={roleTemplates} editing={editingKpi} showWizard={showKpiWizard} onCreate={() => { setEditingKpi(undefined); setShowKpiWizard(true); }} onEdit={(definition) => { setEditingKpi(definition); setShowKpiWizard(true); }} onCancel={() => { setEditingKpi(undefined); setShowKpiWizard(false); }} onSave={saveCustomKpi} onArchive={archiveCustomKpi} onDelete={deleteDraftKpi} onDuplicate={duplicateCustomKpi} />}
+          {tab === "layouts" && <Layouts templates={roleTemplates} customDefinitions={customKpiStore.definitions} saved={templateSaved} onSave={saveRoleTemplate} />}
           {tab === "sources" && <Sources />}
         </div>
       </main>
@@ -177,19 +203,34 @@ function ServiceTitanForm({ showSecret, setShowSecret, testState, testMessage, o
   </>;
 }
 
-function MetricLibrary({ customMetrics, form, setForm, onAdd, onDelete }: { customMetrics: CustomMetricInput[]; form: typeof defaultMetricForm; setForm: (value: typeof defaultMetricForm) => void; onAdd: (event: FormEvent) => void; onDelete: (id: string) => void }) {
-  return <><PageTitle eyebrow="Metric governance" title="KPI library" copy="Define each KPI once, then override targets, mappings, and visibility by tenant or location. Custom metrics can be added without deploying code." />
-    <div className="admin-grid-two metric-admin-grid"><section className="admin-card"><div className="card-title"><div><span>No-code builder</span><h3>Add a custom KPI</h3></div><Plus /></div><form className="metric-form" onSubmit={onAdd}><label>KPI name<input required value={form.title} onChange={(e) => setForm({...form,title:e.target.value})} placeholder="e.g. 5-star review pace" /></label><div className="form-grid"><label>Dashboard tab<select value={form.section} onChange={(e) => setForm({...form,section:e.target.value as MetricSection})}><option value="executive">Executive</option><option value="revenue">Revenue</option><option value="calls">Calls & Digital</option><option value="appointments">Appointments</option><option value="sales">Sales</option><option value="membership">Membership</option></select></label><label>Format<select value={form.kind} onChange={(e) => setForm({...form,kind:e.target.value as MetricKind})}><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percent</option><option value="ratio">Ratio</option></select></label><label>Current value<input required type="number" step="any" value={form.actual} onChange={(e) => setForm({...form,actual:e.target.value})} /></label><label>Target (optional)<input type="number" step="any" value={form.goal} onChange={(e) => setForm({...form,goal:e.target.value})} /></label><label>Source<select value={form.source} onChange={(e) => setForm({...form,source:e.target.value as SourceKey})}><option>Custom</option><option>ServiceTitan</option><option>Budget</option><option>GA4</option><option>Call System</option><option>Derived</option></select></label><label>Supporting label<input value={form.subtitle} onChange={(e) => setForm({...form,subtitle:e.target.value})} /></label></div><button className="button primary" type="submit"><Plus size={16} /> Add to dashboard</button></form></section>
-    <section className="admin-card"><div className="card-title"><div><span>Custom metrics</span><h3>{customMetrics.length} browser-local KPI{customMetrics.length===1?"":"s"}</h3></div><BarChart3 /></div>{customMetrics.length===0?<div className="small-empty"><SlidersHorizontal /><strong>No custom KPIs yet</strong><p>Add one to see it immediately on the selected dashboard tab.</p></div>:<div className="custom-metric-list">{customMetrics.map((metric)=><div key={metric.id}><span className="metric-source-icon">{metric.source.slice(0,1)}</span><div><strong>{metric.title}</strong><p>{metric.section} · {metric.source} · target {metric.goal ?? "not set"}</p></div><button onClick={()=>onDelete(metric.id)}><Trash2 size={16}/></button></div>)}</div>}</section></div>
-    <section className="admin-card library-table"><div className="card-title"><div><span>Governed catalog</span><h3>Core metric definitions</h3></div><span className="count-pill">34 configured</span></div><div className="table-scroll"><table><thead><tr><th>Metric</th><th>Definition owner</th><th>Default source</th><th>Target scope</th><th>Visibility</th></tr></thead><tbody>{[["Revenue MTD","Finance","ServiceTitan","Location + division"],["Projected Month-End","Finance","Derived","Location"],["Call Booking Rate","Call Center","ServiceTitan","Location + department"],["Digital Conversion","Marketing","GA4 + booking events","Brand"],["Sales Close Rate","Sales","ServiceTitan","Division + lead type"],["Membership Net Growth","Operations","ServiceTitan","Location"]].map((row)=><tr key={row[0]}>{row.map((cell,index)=><td key={cell}>{index===0?<strong>{cell}</strong>:cell}</td>)}<td><span className="visibility-chip"><Eye size={13}/>GM default</span></td></tr>)}</tbody></table></div></section>
+function MetricLibrary({ definitions, templates, editing, showWizard, onCreate, onEdit, onCancel, onSave, onArchive, onDelete, onDuplicate }: { definitions: CustomKpiDefinition[]; templates: LayoutTemplate[]; editing?: CustomKpiDefinition; showWizard: boolean; onCreate: () => void; onEdit: (definition: CustomKpiDefinition) => void; onCancel: () => void; onSave: (definition: CustomKpiDefinition) => void; onArchive: (id: string) => void; onDelete: (id: string) => void; onDuplicate: (definition: CustomKpiDefinition) => void }) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | CustomKpiDefinition["status"]>("all");
+  const catalog = getMetrics(locations[0]);
+  const evaluations = useMemo(() => evaluateCustomKpis(definitions, catalog), [definitions, catalog]);
+  const filtered = definitions.filter((definition) => (statusFilter === "all" || definition.status === statusFilter) && `${definition.title} ${definition.key} ${definition.owner}`.toLowerCase().includes(query.toLowerCase()));
+  const counts = { draft: definitions.filter((item) => item.status === "draft").length, published: definitions.filter((item) => item.status === "published").length, archived: definitions.filter((item) => item.status === "archived").length };
+
+  if (showWizard) return <><PageTitle eyebrow="Metric governance" title="KPI builder" copy="Create a governed KPI definition, validate its source and calculation, assign role templates, and publish it to this browser-local test environment." /><KpiWizard initial={editing} catalog={catalog} definitions={definitions} locations={locations} templates={templates} onSaveDraft={onSave} onPublish={onSave} onCancel={onCancel} /></>;
+
+  return <><PageTitle eyebrow="Metric governance" title="KPI library" copy="Core definitions stay governed. New KPIs move through definition, scope, source, calculation, validation, and publication before they can reach a dashboard." />
+    <div className="kpi-library-summary"><div><span>Core catalog</span><strong>{catalog.length}</strong><p>Governed definitions</p></div><div><span>Published custom</span><strong>{counts.published}</strong><p>Available to assigned templates</p></div><div><span>Drafts</span><strong>{counts.draft}</strong><p>Not visible on dashboards</p></div><div><span>Archived</span><strong>{counts.archived}</strong><p>Retained for lineage</p></div></div>
+    <section className="admin-card custom-kpi-catalog"><div className="custom-kpi-toolbar"><div><span>Custom KPI catalog</span><h3>Governed browser-local definitions</h3></div><button className="button primary" onClick={onCreate}><Plus size={16}/>Create KPI</button></div>
+      <div className="catalog-filters"><label>Search<input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Name, key, or owner" /></label><label>Status<select value={statusFilter} onChange={(event)=>setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select></label><span>{filtered.length} result{filtered.length===1?"":"s"}</span></div>
+      {filtered.length === 0 ? <div className="small-empty"><SlidersHorizontal/><strong>{definitions.length ? "No KPIs match these filters" : "No custom KPIs yet"}</strong><p>{definitions.length ? "Adjust the search or status filter." : "Start with a governed variant, derived formula, manual KPI, or external-source definition."}</p>{!definitions.length && <button className="button primary" onClick={onCreate}><Plus size={15}/>Create first KPI</button>}</div> : <div className="table-scroll"><table className="custom-kpi-table"><thead><tr><th>KPI</th><th>Status</th><th>Type / owner</th><th>Scope</th><th>Validation</th><th>Templates</th><th>Actions</th></tr></thead><tbody>{filtered.map((definition)=>{const evaluation=evaluations.get(definition.id);const validationFailed=definition.validationChecks.some((check)=>check.status==="fail");return <tr key={definition.id}><td><strong>{definition.title}</strong><span>{definition.key} · v{definition.version}</span></td><td><span className={`kpi-status ${definition.status}`}>{definition.status}</span></td><td>{definition.type}<span>{definition.owner || "Owner not assigned"}</span></td><td>{definition.scopeMode === "portfolio" ? "Portfolio" : `${definition.locationIds.length} locations`}</td><td><span className={`validation-chip ${validationFailed ? "fail" : definition.validatedAt ? "pass" : "pending"}`}>{validationFailed ? "Failed" : definition.validatedAt ? "Validated" : "Not run"}</span><span>{evaluation?.state === "unavailable" ? evaluation.reason : "Preview available"}</span></td><td>{definition.templateIds.length}</td><td><div className="catalog-actions"><button aria-label={`Edit ${definition.title}`} onClick={()=>onEdit(definition)}><Pencil size={15}/>Edit</button><button aria-label={`Duplicate ${definition.title}`} onClick={()=>onDuplicate(definition)}><Copy size={15}/>Duplicate</button>{definition.status === "draft" ? <button className="danger" aria-label={`Delete ${definition.title}`} onClick={()=>onDelete(definition.id)}><Trash2 size={15}/>Delete</button> : definition.status === "published" ? <button className="danger" aria-label={`Archive ${definition.title}`} onClick={()=>onArchive(definition.id)}><Archive size={15}/>Archive</button> : null}</div></td></tr>})}</tbody></table></div>}
+    </section>
+    <section className="admin-card library-table"><div className="card-title"><div><span>Governed catalog</span><h3>Core metric definitions</h3></div><span className="count-pill">{catalog.length} configured</span></div><div className="table-scroll"><table><thead><tr><th>Metric</th><th>Definition owner</th><th>Default source</th><th>Target scope</th><th>Visibility</th></tr></thead><tbody>{[["Revenue MTD","Finance","ServiceTitan","Location + division"],["Projected Month-End","Finance","Derived","Location"],["Call Booking Rate","Call Center","ServiceTitan","Location + department"],["Digital Conversion","Marketing","GA4 + booking events","Brand"],["Sales Close Rate","Sales","ServiceTitan","Division + lead type"],["Membership Net Growth","Operations","ServiceTitan","Location"]].map((row)=><tr key={row[0]}>{row.map((cell,index)=><td key={cell}>{index===0?<strong>{cell}</strong>:cell}</td>)}<td><span className="visibility-chip"><Eye size={13}/>GM default</span></td></tr>)}</tbody></table></div></section>
   </>;
 }
 
-function Layouts({ templates, saved, onSave }: { templates: LayoutTemplate[]; saved: boolean; onSave: (template: LayoutTemplate) => void }) {
+function Layouts({ templates, customDefinitions, saved, onSave }: { templates: LayoutTemplate[]; customDefinitions: CustomKpiDefinition[]; saved: boolean; onSave: (template: LayoutTemplate) => void }) {
   const [editingId, setEditingId] = useState<LayoutTemplate["id"] | null>(null);
   const [selectedSection, setSelectedSection] = useState<MetricSection>("executive");
   const [draft, setDraft] = useState<LayoutTemplate | null>(null);
-  const catalog = getMetrics(locations[0]);
+  const coreCatalog = getMetrics(locations[0]);
+  const evaluations = evaluateCustomKpis(customDefinitions, coreCatalog);
+  const customCatalog = customDefinitions.map((definition) => customKpiToMetric(definition, evaluations.get(definition.id) ?? { state: "unavailable", sparkline: [], source: "Custom", lineage: [], reason: "Unavailable" })).filter((metric): metric is Metric => Boolean(metric));
+  const catalog = [...coreCatalog, ...customCatalog];
 
   function beginEdit(template: LayoutTemplate) {
     setDraft(cloneTemplate(template));

@@ -25,8 +25,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
 import { defaultRoleTemplates, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
+import { customKpiToMetric, evaluateCustomKpis, readCustomKpiStore, type CustomKpiDefinition } from "@/lib/custom-kpis";
 import { changeFromPrior, formatMetric, metricAttainment, metricStatus, reorder } from "@/lib/metrics";
-import type { CustomMetricInput, LayoutTemplate, Metric, MetricSection, Status } from "@/lib/types";
+import type { LayoutTemplate, Metric, MetricSection, Status } from "@/lib/types";
 
 const sections: { id: MetricSection; icon: typeof Activity; short: string }[] = [
   { id: "executive", icon: LayoutDashboard, short: "Executive" },
@@ -180,7 +181,7 @@ export function Dashboard() {
   const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
   const [orders, setOrders] = useState<Record<string, string[]>>({});
-  const [customMetrics, setCustomMetrics] = useState<CustomMetricInput[]>([]);
+  const [customDefinitions, setCustomDefinitions] = useState<CustomKpiDefinition[]>([]);
   const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -188,34 +189,36 @@ export function Dashboard() {
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       setMounted(true);
-      try {
-        setHidden(JSON.parse(localStorage.getItem("gmib.hidden.v1") ?? "[]"));
-        setOrders(JSON.parse(localStorage.getItem("gmib.orders.v1") ?? "{}"));
-        setCustomMetrics(JSON.parse(localStorage.getItem("gmib.custom-metrics.v1") ?? "[]"));
-        setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]")));
-      } catch {
-        setRoleTemplates(normalizeRoleTemplates([]));
-      }
+      try { setHidden(JSON.parse(localStorage.getItem("gmib.hidden.v1") ?? "[]")); } catch { setHidden([]); }
+      try { setOrders(JSON.parse(localStorage.getItem("gmib.orders.v1") ?? "{}")); } catch { setOrders({}); }
+      const store = readCustomKpiStore(localStorage, new Date().toISOString());
+      setCustomDefinitions(store.definitions);
+      const publishedIds = store.definitions.filter((item) => item.status === "published").map((item) => item.id);
+      try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"), publishedIds)); } catch { setRoleTemplates(normalizeRoleTemplates([], publishedIds)); }
     }, 0);
     return () => window.clearTimeout(hydrate);
   }, []);
 
   const location = locations.find((item) => item.id === locationId) ?? locations[0];
   const allMetrics = useMemo(() => {
-    const custom: Metric[] = customMetrics.map((input) => ({ ...input, direction: "higher", sparkline: [input.actual * .82, input.actual * .86, input.actual * .9, input.actual * .91, input.actual * .96, input.actual * .98, input.actual] }));
-    return [...getMetrics(location), ...custom];
-  }, [location, customMetrics]);
+    const core = getMetrics(location);
+    const evaluations = evaluateCustomKpis(customDefinitions, core);
+    const custom = customDefinitions
+      .filter((definition) => definition.status === "published" && (definition.scopeMode === "portfolio" || definition.locationIds.includes(location.id)))
+      .map((definition) => customKpiToMetric(definition, evaluations.get(definition.id) ?? { state: "unavailable", sparkline: [], source: "Custom", lineage: [], reason: "Unavailable" }))
+      .filter((metric): metric is Metric => Boolean(metric));
+    return [...core, ...custom];
+  }, [location, customDefinitions]);
   const gmTemplate = roleTemplates.find((template) => template.id === "gm-daily") ?? defaultRoleTemplates[0];
   const sectionMetrics = useMemo(() => {
     const inSection = allMetrics.filter((metric) => metric.section === section);
     const metricById = new Map(inSection.map((metric) => [metric.id, metric]));
-    const customIds = new Set(customMetrics.map((metric) => metric.id));
-    const governed = gmTemplate.sections[section]
-      .map((id) => metricById.get(id))
-      .filter((metric): metric is Metric => Boolean(metric));
-    const custom = inSection.filter((metric) => customIds.has(metric.id) && !gmTemplate.sections[section].includes(metric.id));
-    return [...governed, ...custom];
-  }, [allMetrics, section, customMetrics, gmTemplate]);
+    const assignedCustomIds = customDefinitions
+      .filter((definition) => definition.status === "published" && definition.section === section && definition.templateIds.includes("gm-daily"))
+      .map((definition) => definition.id);
+    const assignedIds = [...gmTemplate.sections[section], ...assignedCustomIds.filter((id) => !gmTemplate.sections[section].includes(id))];
+    return assignedIds.map((id) => metricById.get(id)).filter((metric): metric is Metric => Boolean(metric));
+  }, [allMetrics, section, customDefinitions, gmTemplate]);
   const orderKey = `${locationId}:${section}`;
   const orderedMetrics = useMemo(() => {
     const ids = orders[orderKey] ?? [];
