@@ -1,6 +1,6 @@
 # GM Intelligence Board Supabase schema
 
-This directory contains version-controlled schema artifacts for a **new, isolated staging project**. It does not contain a remote project reference, credentials, production data, or demo seed data. The initial migration has been applied to staging and verified there; no production project has been linked or changed.
+This directory contains version-controlled schema artifacts for the isolated GM Intelligence private-pilot Supabase project. It does not contain a remote project reference, credentials, production data, or demo seed data. Production changes are forward-only migrations and are verified by the rollback-only schema suite.
 
 ## Artifacts
 
@@ -16,6 +16,8 @@ This directory contains version-controlled schema artifacts for a **new, isolate
 - `migrations/20260818000700_constraint_validator_acl.sql` — restores only the pure CHECK-constraint validators required by authenticated configuration writes.
 - `migrations/20260818000800_audit_secret_redaction.sql` — removes managed-secret locators from historical and future connection audit snapshots.
 - `migrations/20260818000900_multi_tenant_operator_access.sql` — service-role-only atomic owner-membership grant for explicitly approved multi-tenant operators.
+- `migrations/20260818001000_champions_group_portfolio.sql` — explicit Champions Group portfolio, brand attachments, portfolio memberships, audited lifecycle RPCs, and fail-closed portfolio overview.
+- `migrations/20260818001100_portfolio_audit_trigger_fix.sql` — table-safe portfolio audit identity comparisons and the current release marker.
 - `tests/schema_verification.sql` — catalog assertions plus rollback-only service-role/bootstrap and authenticated cross-tenant RLS behavior checks.
 
 The migration models organizations, locations, Auth-linked profiles, memberships/RBAC, credential-free ServiceTitan metadata and exact location assignments, governed saved-report sources, source-fingerprint evidence, versioned custom KPI definitions and exact location bindings, append-only observations, targets, layouts, and append-only audit events.
@@ -30,7 +32,7 @@ Approval and membership authorization are also enforced by database triggers rat
 
 ## Release readiness
 
-Migration `20260818000900` records the non-secret marker `20260818000900_multi_tenant_operator_access` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
+Migration `20260818001100` records the non-secret marker `20260818001100_portfolio_audit_trigger_fix` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. Readiness also requires the active Champions Group portfolio, at least one active portfolio owner, and attachment coverage for every active brand. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
 
 ## Auth and first-organization bootstrap
 
@@ -49,12 +51,14 @@ Use the operator script from the repository root. Keep secrets in the process en
 BOOTSTRAP_USER_PASSWORD='use-an-operator-supplied-random-password' \
 NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \
 SUPABASE_SERVICE_ROLE_KEY='operator-local-service-role-key' \
-node scripts/bootstrap-tenant.mjs \
+GM_PLATFORM_OWNER_PROFILE_ID='approved-platform-owner-profile-uuid' \
+GM_DEFAULT_PORTFOLIO_ID='c1000000-0000-4000-8000-000000000001' \
+npx --yes --package=node@22.23.2 --call "node scripts/bootstrap-tenant.mjs \
   --email owner@example.com \
   --display-name 'Pilot Owner' \
   --organization-slug pilot-company \
   --organization-name 'Pilot Company' \
-  --confirm pilot-company
+  --confirm pilot-company"
 ```
 
 The script creates the Auth user with confirmed email, calls the transactional RPC, and removes a newly created Auth user if the database transaction fails. Retrying the exact command is safe. It does not reset the password of an existing Auth user and does not print email, password, service key, or API error bodies. Preserve the returned user/organization IDs in the operator record; do not commit them.
@@ -68,15 +72,17 @@ Removal is deliberately not a general tenant-deletion feature. `remove_empty_qa_
 ```bash
 NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \
 SUPABASE_SERVICE_ROLE_KEY='operator-local-service-role-key' \
-node scripts/remove-qa-tenant.mjs \
+GM_PLATFORM_OWNER_PROFILE_ID='approved-platform-owner-profile-uuid' \
+GM_DEFAULT_PORTFOLIO_ID='c1000000-0000-4000-8000-000000000001' \
+npx --yes --package=node@22.23.2 --call "node scripts/remove-qa-tenant.mjs \
   --email qa-owner@example.com \
   --organization-slug qa-disposable-pilot \
   --organization-id 00000000-0000-4000-8000-000000000000 \
   --user-id 00000000-0000-4000-8000-000000000000 \
-  --confirm 'qa-disposable-pilot:00000000-0000-4000-8000-000000000000:00000000-0000-4000-8000-000000000000'
+  --confirm 'qa-disposable-pilot:<organization-id>:<user-id>'"
 ```
 
-Database teardown commits before Auth deletion because profile/membership foreign keys prevent deleting Auth first. If Auth deletion fails, rerun the exact command: it resumes only when the expected organization, profile, and memberships are already absent. Never use the QA path for pilot or production tenant offboarding.
+Portfolio preparation and empty-QA database teardown run inside one atomic RPC; any legacy teardown refusal rolls the portfolio changes back. Database teardown commits before Auth deletion because profile/membership foreign keys prevent deleting Auth first. If Auth deletion fails, rerun the exact command: it resumes only when the expected organization, profile, and memberships are already absent. Never use the QA path for pilot or production tenant offboarding.
 
 ## Local migration workflow
 
@@ -111,7 +117,7 @@ Before applying to staging:
 6. run `tests/schema_verification.sql` against staging with a privileged migration connection (only when disposable fixture creation inside its rolled-back transaction is approved);
 7. bootstrap a disposable `qa-*` owner with the operator script, verify owner access and cross-organization denial, then remove it with the exact IDs and guarded QA script.
 
-The initial migration was applied only to the isolated staging project. The staging project reference and credentials remain operator-local and ignored by Git. No application deployment, Auth-user bootstrap, production migration, or tenant-data load was performed.
+The project reference and credentials remain operator-local and ignored by Git. Production promotion requires an exact reviewed Git SHA, forward-only migration dry run, release-readiness proof, schema/RLS rollback suite, exact-SHA Vercel verification, and authenticated disposable-tenant cleanup.
 
 ## Design assumptions
 

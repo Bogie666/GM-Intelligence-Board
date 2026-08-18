@@ -243,7 +243,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260818001000_champions_group_portfolio' then
+     or release_marker is distinct from '20260818001100_portfolio_audit_trigger_fix' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -945,6 +945,30 @@ begin
   ) then
     raise exception 'portfolio owner grant was not audited';
   end if;
+  perform public.grant_portfolio_owner_access(
+    'c1000000-0000-4000-8000-000000000001',
+    '40000000-0000-4000-8000-000000000004',
+    'Schema verification temporary portfolio membership'
+  );
+  perform public.revoke_portfolio_membership(
+    'c1000000-0000-4000-8000-000000000001',
+    '40000000-0000-4000-8000-000000000004',
+    'Schema verification portfolio membership revoke'
+  );
+  if not exists (
+    select 1 from public.portfolio_memberships membership
+    where membership.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+      and membership.profile_id = '40000000-0000-4000-8000-000000000004'
+      and membership.status = 'revoked'
+  ) or not exists (
+    select 1 from public.portfolio_audit_events audit
+    where audit.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+      and audit.target_profile_id = '40000000-0000-4000-8000-000000000004'
+      and audit.event_type = 'portfolio_memberships.update'
+      and audit.after_state ->> 'status' = 'revoked'
+  ) then
+    raise exception 'portfolio membership revoke did not persist an immutable audit event';
+  end if;
   if pg_catalog.has_table_privilege('authenticated', 'public.portfolios', 'SELECT,INSERT,UPDATE,DELETE')
     or pg_catalog.has_table_privilege('authenticated', 'public.portfolio_memberships', 'SELECT,INSERT,UPDATE,DELETE')
     or pg_catalog.has_table_privilege('authenticated', 'public.portfolio_organizations', 'SELECT,INSERT,UPDATE,DELETE')
@@ -974,7 +998,7 @@ begin
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260818001000_champions_group_portfolio' then
+  if release_ready is distinct from true or release_marker is distinct from '20260818001100_portfolio_audit_trigger_fix' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end
