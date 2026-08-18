@@ -21,6 +21,12 @@ function memoryStorage(seed: Record<string, string> = {}) {
   };
 }
 
+function expectUnavailable(store: ReturnType<typeof readConnectionStore>) {
+  expect(store.availability).toBe("unavailable");
+  expect(store.connections).toEqual([]);
+  expect(store.unavailableReason).toEqual(expect.any(String));
+}
+
 const input = {
   tenantId: "new-tenant-123",
   displayName: "New Home Services",
@@ -34,6 +40,7 @@ const input = {
 describe("demo ServiceTitan connection domain", () => {
   it("seeds one isolated profile per demo tenant", () => {
     const store = createSeedConnectionStore();
+    expect(store.availability).toBeUndefined();
     expect(store.connections).toHaveLength(3);
     expect(new Set(store.connections.map((item) => item.tenantId)).size).toBe(3);
     expect(new Set(store.connections.flatMap((item) => item.locationIds)).size).toBe(3);
@@ -72,16 +79,71 @@ describe("demo ServiceTitan connection domain", () => {
     expect(store.connections.find((item) => item.id === edited.id)?.status).toBe("archived");
   });
 
-  it("recovers malformed storage, rejects raw-field records, writes, and resets", () => {
+  it("seeds and persists defaults only when the storage key is absent", () => {
+    const storage = memoryStorage();
+    const store = readConnectionStore(storage);
+    expect(store).toEqual(createSeedConnectionStore());
+    expect(JSON.parse(storage.value(DEMO_CONNECTION_STORAGE_KEY)!)).toEqual(store);
+  });
+
+  it("fails closed for malformed or unsafe existing storage", () => {
     const malformed = memoryStorage({ [DEMO_CONNECTION_STORAGE_KEY]: "{bad json" });
-    expect(readConnectionStore(malformed).connections).toHaveLength(3);
+    expectUnavailable(readConnectionStore(malformed));
+
+    const store = createSeedConnectionStore();
+    const unsafe = { ...store, connections: [{ ...store.connections[0], accessToken: "leak" }] };
+    const unsafeStorage = memoryStorage({ [DEMO_CONNECTION_STORAGE_KEY]: JSON.stringify(unsafe) });
+    expectUnavailable(readConnectionStore(unsafeStorage));
+    expect(normalizeConnectionStore(unsafe)).toBeNull();
+
+    const unknown = { ...store, connections: [{ ...store.connections[0], harmlessExtra: true }] };
+    expect(normalizeConnectionStore(unknown)).toBeNull();
+    const recursivelyUnsafe = { ...store, metadata: { nested: { bearer_token: "leak" } } };
+    expect(normalizeConnectionStore(recursivelyUnsafe)).toBeNull();
+
+    for (const credentialKey of ["secret", "pass_word", "authorization", "accessToken", "client-id", "app_key", "apiKey", "bearerToken"]) {
+      const credentialBearing = {
+        ...store,
+        connections: [{ ...store.connections[0], [credentialKey]: "leak" }],
+      };
+      expect(normalizeConnectionStore(credentialBearing), credentialKey).toBeNull();
+    }
+  });
+
+  it("handles storage read and write failures without exposing seeded connections", () => {
+    const badRead = { getItem: () => { throw new Error("blocked"); } };
+    expectUnavailable(readConnectionStore(badRead));
+
+    const badInitialWrite = {
+      getItem: () => null,
+      setItem: () => { throw new Error("quota"); },
+    };
+    expectUnavailable(readConnectionStore(badInitialWrite));
+    expect(writeConnectionStore(createSeedConnectionStore(), badInitialWrite)).toBe(false);
+  });
+
+  it("rejects unsafe writes and roundtrips valid stores as detached safe clones", () => {
     const store = createSeedConnectionStore();
     const storage = memoryStorage();
     expect(writeConnectionStore(store, storage)).toBe(true);
+    const roundtrip = readConnectionStore(storage);
+    expect(roundtrip).toEqual(store);
+    expect(roundtrip).not.toBe(store);
+    expect(roundtrip.connections).not.toBe(store.connections);
+    expect(roundtrip.connections[0]).not.toBe(store.connections[0]);
+    expect(roundtrip.connections[0].locationIds).not.toBe(store.connections[0].locationIds);
+    roundtrip.connections[0].locationIds.push("detached-location");
     expect(readConnectionStore(storage)).toEqual(store);
-    const unsafe = { ...store, connections: [{ ...store.connections[0], clientSecret: "leak" }] };
-    expect(normalizeConnectionStore(unsafe)).toBeNull();
+
+    const unsafe = { ...store, connections: [{ ...store.connections[0], accessToken: "leak" }] };
+    expect(writeConnectionStore(unsafe, storage)).toBe(false);
+    expect(readConnectionStore(storage)).toEqual(store);
+  });
+
+  it("resets a writable store to the unchanged demo seed data", () => {
+    const storage = memoryStorage({ [DEMO_CONNECTION_STORAGE_KEY]: "{bad json" });
     const reset = resetConnectionStore(storage);
+    expect(reset).toEqual(createSeedConnectionStore());
     expect(readConnectionStore(storage)).toEqual(reset);
   });
 });

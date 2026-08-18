@@ -35,10 +35,13 @@ import {
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getMetrics, locations, sectionMeta } from "@/lib/demo-data";
+import { createSeedConnectionStore, readConnectionStore, type DemoServiceTitanConnection } from "@/lib/demo-connections";
+import { createSeedServiceTitanSourceStore, readServiceTitanSourceStore, type ServiceTitanReportSource } from "@/lib/service-titan-sources";
 import { cloneTemplate, defaultRoleTemplates, metricSections, moveTemplateMetric, normalizeRoleTemplates, ROLE_TEMPLATE_STORAGE_KEY } from "@/lib/layout-templates";
 import { createKpiId, customKpiToMetric, duplicateCustomKpiDefinition, evaluateCustomKpis, readCustomKpiStore, writeCustomKpiStore, type CustomKpiDefinition, type CustomKpiStore } from "@/lib/custom-kpis";
 import { KpiWizard } from "@/components/kpi-wizard";
 import { ServiceTitanConnections } from "@/components/service-titan-connections";
+import { ServiceTitanSourceCatalog } from "@/components/service-titan-source-catalog";
 import { TargetsAndBudgets } from "@/components/targets-and-budgets";
 import type { LayoutTemplate, Metric, MetricSection } from "@/lib/types";
 
@@ -74,21 +77,33 @@ export function AdminConsole() {
   const [tab, setTab] = useState<AdminTab>("overview");
   const [domoTestState, setDomoTestState] = useState<TestState>("idle");
   const [domoTestMessage, setDomoTestMessage] = useState("");
-  const [customKpiStore, setCustomKpiStore] = useState<CustomKpiStore>({ schemaVersion: 2, definitions: [] });
+  const [customKpiStore, setCustomKpiStore] = useState<CustomKpiStore>({ schemaVersion: 3, definitions: [] });
+  const [serviceTitanConnections, setServiceTitanConnections] = useState<DemoServiceTitanConnection[]>(() => createSeedConnectionStore().connections);
+  const [serviceTitanReports, setServiceTitanReports] = useState<ServiceTitanReportSource[]>(() => createSeedServiceTitanSourceStore().reports);
   const [editingKpi, setEditingKpi] = useState<CustomKpiDefinition | undefined>();
   const [showKpiWizard, setShowKpiWizard] = useState(false);
   const [roleTemplates, setRoleTemplates] = useState<LayoutTemplate[]>(defaultRoleTemplates);
-  const [saved, setSaved] = useState(false);
   const [templateSaved, setTemplateSaved] = useState(false);
+  const [storagePersistenceError, setStoragePersistenceError] = useState("");
 
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       const store = readCustomKpiStore(localStorage, new Date().toISOString());
       setCustomKpiStore(store);
+      setServiceTitanConnections(readConnectionStore(localStorage).connections);
+      setServiceTitanReports(readServiceTitanSourceStore(localStorage).reports);
       const customIds = store.definitions.filter((item) => item.status === "published").map((item) => item.id);
       try { setRoleTemplates(normalizeRoleTemplates(JSON.parse(localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY) ?? "[]"), customIds)); } catch { setRoleTemplates(normalizeRoleTemplates([], customIds)); }
     }, 0);
-    return () => window.clearTimeout(hydrate);
+    const sourceUpdated = (event: Event) => {
+      const next = (event as CustomEvent<{ reports?: ServiceTitanReportSource[] }>).detail;
+      if (Array.isArray(next?.reports)) setServiceTitanReports(next.reports);
+    };
+    window.addEventListener("gmib:servicetitan-sources-updated", sourceUpdated);
+    return () => {
+      window.clearTimeout(hydrate);
+      window.removeEventListener("gmib:servicetitan-sources-updated", sourceUpdated);
+    };
   }, []);
 
 
@@ -110,35 +125,63 @@ export function AdminConsole() {
     }
   }
 
-  function persistCustomDefinitions(definitions: CustomKpiDefinition[]) {
-    const next = { ...customKpiStore, schemaVersion: 2 as const, definitions };
+  function persistCustomDefinitions(definitions: CustomKpiDefinition[]): boolean {
+    const next = { ...customKpiStore, schemaVersion: 3 as const, definitions };
+    if (!writeCustomKpiStore(localStorage, next)) {
+      setStoragePersistenceError("The KPI change could not be saved in this browser. No success was recorded.");
+      return false;
+    }
     setCustomKpiStore(next);
-    writeCustomKpiStore(localStorage, next);
+    setStoragePersistenceError("");
+    return true;
   }
-  function saveCustomKpi(definition: CustomKpiDefinition) {
+  function saveCustomKpi(definition: CustomKpiDefinition): boolean {
     const definitions = customKpiStore.definitions.some((item) => item.id === definition.id)
       ? customKpiStore.definitions.map((item) => item.id === definition.id ? definition : item)
       : [...customKpiStore.definitions, definition];
-    persistCustomDefinitions(definitions);
+    const updatedTemplates = definition.status === "published"
+      ? roleTemplates.map((template) => {
+          const sections = Object.fromEntries(metricSections.map((section) => [section, template.sections[section].filter((id) => id !== definition.id)])) as LayoutTemplate["sections"];
+          if (definition.templateIds.includes(template.id)) sections[definition.section] = [...sections[definition.section], definition.id];
+          return { ...template, sections, updatedAt: new Date().toISOString() };
+        })
+      : roleTemplates;
+    let previousTemplateJson: string | null = null;
     if (definition.status === "published") {
-      const updatedTemplates = roleTemplates.map((template) => {
-        const sections = Object.fromEntries(metricSections.map((section) => [section, template.sections[section].filter((id) => id !== definition.id)])) as LayoutTemplate["sections"];
-        if (definition.templateIds.includes(template.id)) sections[definition.section] = [...sections[definition.section], definition.id];
-        return { ...template, sections, updatedAt: new Date().toISOString() };
-      });
-      setRoleTemplates(updatedTemplates);
-      localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+      try {
+        previousTemplateJson = localStorage.getItem(ROLE_TEMPLATE_STORAGE_KEY);
+        localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+      } catch {
+        setStoragePersistenceError("The KPI template assignment could not be saved in this browser. No success was recorded.");
+        return false;
+      }
     }
+    if (!persistCustomDefinitions(definitions)) {
+      if (definition.status === "published") {
+        try {
+          if (previousTemplateJson === null) localStorage.removeItem(ROLE_TEMPLATE_STORAGE_KEY);
+          else localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, previousTemplateJson);
+        } catch { /* The builder remains open and reports the failed save. */ }
+      }
+      return false;
+    }
+    if (definition.status === "published") setRoleTemplates(updatedTemplates);
     setEditingKpi(undefined);
     setShowKpiWizard(false);
+    return true;
   }
   function archiveCustomKpi(id: string) {
     if (!window.confirm("Archive this KPI? It will be removed from assigned dashboards but retained in the browser-local catalog.")) return;
     const definitions = customKpiStore.definitions.map((item) => item.id === id ? { ...item, status: "archived" as const, updatedAt: new Date().toISOString() } : item);
-    persistCustomDefinitions(definitions);
+    if (!persistCustomDefinitions(definitions)) return;
     const updatedTemplates = roleTemplates.map((template) => ({ ...template, sections: Object.fromEntries(metricSections.map((section) => [section, template.sections[section].filter((metricId) => metricId !== id)])) as LayoutTemplate["sections"] }));
-    setRoleTemplates(updatedTemplates);
-    localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+    try {
+      localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updatedTemplates));
+      setRoleTemplates(updatedTemplates);
+      setStoragePersistenceError("");
+    } catch {
+      setStoragePersistenceError("The KPI was archived, but its browser-local template cleanup could not be saved. Reload before making more template changes.");
+    }
   }
   function deleteDraftKpi(id: string) {
     if (!window.confirm("Delete this unpublished draft? This cannot be undone.")) return;
@@ -149,13 +192,18 @@ export function AdminConsole() {
     setEditingKpi(duplicateCustomKpiDefinition(definition, createKpiId(), now));
     setShowKpiWizard(true);
   }
-  function saveConfig() { setSaved(true); window.setTimeout(() => setSaved(false), 1800); }
   function saveRoleTemplate(template: LayoutTemplate) {
     const updated = roleTemplates.map((item) => item.id === template.id ? { ...cloneTemplate(template), updatedAt: new Date().toISOString() } : item);
-    setRoleTemplates(updated);
-    localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updated));
-    setTemplateSaved(true);
-    window.setTimeout(() => setTemplateSaved(false), 2200);
+    try {
+      localStorage.setItem(ROLE_TEMPLATE_STORAGE_KEY, JSON.stringify(updated));
+      setRoleTemplates(updated);
+      setTemplateSaved(true);
+      setStoragePersistenceError("");
+      window.setTimeout(() => setTemplateSaved(false), 2200);
+    } catch {
+      setTemplateSaved(false);
+      setStoragePersistenceError("The template could not be saved in this browser. The editor remains open with your unsaved changes.");
+    }
   }
 
   return (
@@ -170,12 +218,13 @@ export function AdminConsole() {
       <main className="admin-main">
         <header className="admin-topbar"><div><span>Champions Group portfolio</span><strong>Configuration workspace</strong></div><div><span className="environment-pill">Test environment</span><div className="user-avatar">RM</div></div></header>
         <div className="admin-content">
+          {storagePersistenceError && <div className="test-result error" role="alert">{storagePersistenceError}</div>}
           {tab === "overview" && <Overview onNavigate={setTab} />}
-          {tab === "locations" && <Locations saved={saved} onSave={saveConfig} />}
-          {tab === "servicetitan" && <ServiceTitanConnections />}
+          {tab === "locations" && <Locations />}
+          {tab === "servicetitan" && <><ServiceTitanConnections /><ServiceTitanSourceCatalog /></>}
           {tab === "targets" && <TargetsAndBudgets />}
           {tab === "domo" && <DomoIntegration testState={domoTestState} testMessage={domoTestMessage} onTest={testDomoConnection} />}
-          {tab === "metrics" && <MetricLibrary definitions={customKpiStore.definitions} templates={roleTemplates} editing={editingKpi} showWizard={showKpiWizard} onCreate={() => { setEditingKpi(undefined); setShowKpiWizard(true); }} onEdit={(definition) => { setEditingKpi(definition); setShowKpiWizard(true); }} onCancel={() => { setEditingKpi(undefined); setShowKpiWizard(false); }} onSave={saveCustomKpi} onArchive={archiveCustomKpi} onDelete={deleteDraftKpi} onDuplicate={duplicateCustomKpi} />}
+          {tab === "metrics" && <MetricLibrary definitions={customKpiStore.definitions} templates={roleTemplates} serviceTitanConnections={serviceTitanConnections} serviceTitanReports={serviceTitanReports} editing={editingKpi} showWizard={showKpiWizard} onCreate={() => { setEditingKpi(undefined); setShowKpiWizard(true); }} onEdit={(definition) => { setEditingKpi(definition); setShowKpiWizard(true); }} onCancel={() => { setEditingKpi(undefined); setShowKpiWizard(false); }} onSave={saveCustomKpi} onArchive={archiveCustomKpi} onDelete={deleteDraftKpi} onDuplicate={duplicateCustomKpi} />}
           {tab === "layouts" && <Layouts templates={roleTemplates} customDefinitions={customKpiStore.definitions} saved={templateSaved} onSave={saveRoleTemplate} />}
           {tab === "sources" && <Sources />}
         </div>
@@ -206,11 +255,11 @@ function Overview({ onNavigate }: { onNavigate: (tab: AdminTab) => void }) {
   </>;
 }
 
-function Locations({ saved, onSave }: { saved: boolean; onSave: () => void }) {
-  return <><PageTitle eyebrow="Tenant administration" title="Brands & locations" copy="A tenant is the ServiceTitan data boundary. Each tenant can contain one or more operating locations with their own timezone, budgets, and presentation." />
-    <div className="admin-toolbar"><div><strong>{locations.length} locations</strong><span> across {new Set(locations.map((item) => item.tenantId)).size} tenant configurations</span></div><button className="button primary"><Plus size={16} /> Add location</button></div>
-    <div className="location-admin-list">{locations.map((location, index) => <section className="location-admin-card" key={location.id}><div className="location-card-head"><div className="brand-avatar" style={{background: location.accentDark, color: "white"}}>{location.initials}</div><div><h3>{location.brand}</h3><p>{location.location} · {location.timezone}</p></div><span className="connection-badge demo"><CircleAlert size={14} /> Demo data</span></div><div className="form-grid"><label>Display name<input defaultValue={location.brand} /></label><label>Location label<input defaultValue={location.location} /></label><label>ServiceTitan tenant<select defaultValue={location.tenantId}><option value={location.tenantId}>{location.tenantId}</option></select></label><label>Timezone<select defaultValue={location.timezone}><option>{location.timezone}</option><option>America/Chicago</option><option>America/Denver</option><option>America/Los_Angeles</option></select></label><label>Primary color<div className="color-input"><input type="color" defaultValue={location.accentDark} /><input defaultValue={location.accentDark} /></div></label><label>Accent color<div className="color-input"><input type="color" defaultValue={location.accent} /><input defaultValue={location.accent} /></div></label></div>{index === 0 && <div className="mapping-summary"><span><CheckCircle2 size={15} /> 6 reporting divisions</span><span><CircleAlert size={15} /> 2 unmapped business units</span><button onClick={() => undefined}>Review mapping</button></div>}</section>)}</div>
-    <div className="sticky-save"><span>{saved ? <><CheckCircle2 size={16} /> Changes saved locally</> : "Unsaved prototype edits are browser-local"}</span><button className="button primary" onClick={onSave}><Save size={16} /> Save changes</button></div>
+function Locations() {
+  return <><PageTitle eyebrow="Tenant administration" title="Brands & locations" copy="This demo structure is read-only. Production location creation, mapping review, and updates belong to the authenticated tenant control plane." />
+    <div className="admin-toolbar"><div><strong>{locations.length} demo locations</strong><span> across {new Set(locations.map((item) => item.tenantId)).size} illustrative tenant configurations</span></div><button className="button primary" type="button" disabled title="Available in the production tenant control plane"><Plus size={16} /> Add location · production only</button></div>
+    <div className="location-admin-list">{locations.map((location, index) => <section className="location-admin-card" key={location.id}><div className="location-card-head"><div className="brand-avatar" style={{background: location.accentDark, color: "white"}}>{location.initials}</div><div><h3>{location.brand}</h3><p>{location.location} · {location.timezone}</p></div><span className="connection-badge demo"><CircleAlert size={14} /> Read-only demo</span></div><div className="form-grid"><label>Display name<input disabled defaultValue={location.brand} /></label><label>Location label<input disabled defaultValue={location.location} /></label><label>ServiceTitan tenant<select disabled defaultValue={location.tenantId}><option value={location.tenantId}>{location.tenantId}</option></select></label><label>Timezone<select disabled defaultValue={location.timezone}><option>{location.timezone}</option><option>America/Chicago</option><option>America/Denver</option><option>America/Los_Angeles</option></select></label><label>Primary color<div className="color-input"><input disabled type="color" defaultValue={location.accentDark} /><input disabled defaultValue={location.accentDark} /></div></label><label>Accent color<div className="color-input"><input disabled type="color" defaultValue={location.accent} /><input disabled defaultValue={location.accent} /></div></label></div>{index === 0 && <div className="mapping-summary"><span><CheckCircle2 size={15} /> 6 illustrative reporting divisions</span><span><CircleAlert size={15} /> 2 illustrative unmapped units</span><button type="button" disabled title="Available in the production tenant control plane">Review mapping · production only</button></div>}</section>)}</div>
+    <div className="sticky-save"><span><LockKeyhole size={16} /> Demo location fields do not persist. Use the production tenant control plane for real changes.</span><button className="button primary" type="button" disabled title="Available in the production tenant control plane"><Save size={16} /> Save changes · production control plane</button></div>
   </>;
 }
 
@@ -244,11 +293,18 @@ function DomoIntegration({ testState, testMessage, onTest }: { testState: TestSt
   </>;
 }
 
-function MetricLibrary({ definitions, templates, editing, showWizard, onCreate, onEdit, onCancel, onSave, onArchive, onDelete, onDuplicate }: { definitions: CustomKpiDefinition[]; templates: LayoutTemplate[]; editing?: CustomKpiDefinition; showWizard: boolean; onCreate: () => void; onEdit: (definition: CustomKpiDefinition) => void; onCancel: () => void; onSave: (definition: CustomKpiDefinition) => void; onArchive: (id: string) => void; onDelete: (id: string) => void; onDuplicate: (definition: CustomKpiDefinition) => void }) {
+function MetricLibrary({ definitions, templates, serviceTitanConnections, serviceTitanReports, editing, showWizard, onCreate, onEdit, onCancel, onSave, onArchive, onDelete, onDuplicate }: { definitions: CustomKpiDefinition[]; templates: LayoutTemplate[]; serviceTitanConnections: DemoServiceTitanConnection[]; serviceTitanReports: ServiceTitanReportSource[]; editing?: CustomKpiDefinition; showWizard: boolean; onCreate: () => void; onEdit: (definition: CustomKpiDefinition) => void; onCancel: () => void; onSave: (definition: CustomKpiDefinition) => boolean; onArchive: (id: string) => void; onDelete: (id: string) => void; onDuplicate: (definition: CustomKpiDefinition) => void }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | CustomKpiDefinition["status"]>("all");
   const catalog = getMetrics(locations[0]);
-  const evaluations = useMemo(() => evaluateCustomKpis(definitions, catalog), [definitions, catalog]);
+  const evaluations = useMemo(() => evaluateCustomKpis(definitions, catalog, {
+    tenantId: locations[0].tenantId,
+    locationId: locations[0].id,
+    now: new Date().toISOString(),
+    locations,
+    connections: serviceTitanConnections,
+    serviceTitanReports,
+  }), [definitions, catalog, serviceTitanConnections, serviceTitanReports]);
   const filtered = definitions.filter((definition) => (statusFilter === "all" || definition.status === statusFilter) && `${definition.title} ${definition.key} ${definition.owner}`.toLowerCase().includes(query.toLowerCase()));
   const counts = { draft: definitions.filter((item) => item.status === "draft").length, published: definitions.filter((item) => item.status === "published").length, archived: definitions.filter((item) => item.status === "archived").length };
 

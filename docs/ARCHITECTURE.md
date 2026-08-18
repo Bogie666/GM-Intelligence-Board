@@ -34,22 +34,30 @@ Scheduled workers / queues
   └─ KPI materialization + source confidence
 ```
 
+## Staging database implementation
+
+The isolated Supabase PostgreSQL staging project implements the first production-shaped persistence boundary in [`../supabase/migrations/20260817000100_initial_gm_intelligence_board.sql`](../supabase/migrations/20260817000100_initial_gm_intelligence_board.sql). It contains 16 public tables with RLS enabled, no tenant seed data, and no provider credentials. Authenticated reads require active organization membership; administrative configuration writes require an owner/admin role; worker evidence and observations have no authenticated write policies.
+
+The Next.js health endpoint verifies server-side connectivity when staging Supabase variables are configured. Application configuration remains browser-local for now. Moving the repositories and Auth bootstrap onto these tables is a separate controlled migration, not an automatic fallback or dual-write.
+
 ## Core entities
 
-- `tenants`: one ServiceTitan/account security boundary
+- `organizations`: portfolio/company authorization boundary
 - `locations`: operating location, timezone, brand presentation
-- `data_connections`: encrypted credentials and provider state
+- `service_titan_connections`: credential-free provider metadata and external `secret_reference`; secrets remain in a managed secret store
+- `organization_memberships`: Auth-linked tenant roles
+- `service_titan_report_sources` and evidence: governed report contracts and validation history
+- `custom_kpi_definitions` and exact-location bindings: versioned KPI contracts
 - `business_units`: source units and reporting-division mapping
-- `metric_definitions`: formula, format, owner, allowed dimensions
 - `metric_overrides`: effective-dated tenant/location/trade/service-line targets, thresholds, status, owner, and version
 - `budgets`: exact-location monthly financial targets with trade, source version, owner, and approval status
 - `layout_templates`: governed card sets by role
-- `user_layouts`: permitted personal order/visibility overrides
-- `kpi_snapshots`: materialized value, denominator, source timestamp, confidence
+- `profile_layouts`: permitted personal order/visibility overrides
+- `kpi_observations`: append-only materialized values and source identity
 - `sync_runs`: provider, watermarks, row counts, errors, reconciliation state
 - `audit_events`: actor, tenant, action, before/after, timestamp
 
-Every data-bearing table should include `tenant_id`; location-grain tables should also include `location_id`.
+Every data-bearing table includes `organization_id`; location-grain tables also include `location_id` with composite tenant/location foreign keys.
 
 ## ServiceTitan ingestion
 
@@ -60,6 +68,42 @@ Every data-bearing table should include `tenant_id`; location-grain tables shoul
 5. Record unmapped row counts instead of silently classifying them.
 6. Reconcile recent history nightly because source records can be edited after completion.
 7. Materialize KPI snapshots so dashboard loads do not depend on live API latency.
+
+### Custom KPI source bindings
+
+Global KPI definitions and tenant/location source bindings are separate contracts. One definition may be reused across tenants, but each location must resolve to exactly one authorized connection and one source-specific binding. A materialized observation is accepted only when its deterministic contract fingerprint still matches the binding that produced it.
+
+The fingerprint includes tenant, location, connection, source method, recipe/report identity, source version/schema, refresh cadence, report parameters, business-unit mapping, row reduction, and selected value fields. This prevents an observation from being replayed across tenants, locations, report mappings, or changed schemas.
+
+**Endpoint method:** production workers may execute only versioned allowlisted recipes. Each recipe declares the required ServiceTitan capability, output kind, lineage, and permitted cadence. Free-form URLs, resource names, code, and browser-side credentials are not accepted.
+
+**Saved-report method:** production registration follows the official Reporting API v2 contract:
+
+- `GET report-categories` lists available categories.
+- `GET report-category/{category}/reports` lists reports within a category.
+- `GET report-category/{category}/reports/{reportId}` returns mutable description metadata, `modifiedOn`, typed parameters, and output fields. The numeric report ID is the stored identity; name and schema are not treated as immutable.
+- `GET dynamic-value-sets/{dynamicSetId}` resolves accepted values for parameters such as business units.
+- `POST report-category/{category}/reports/{reportId}/data` runs a synchronous report.
+- `POST .../data/query` may return `200` with data or `202` with a token; workers poll `GET data-queries/{token}` and may cancel with `DELETE data-queries/{token}`.
+
+Official reference: [ServiceTitan Reporting API v2 endpoints](https://developer.servicetitan.io/docs/apis/tenant-reporting-v2/endpoints). Report inspection requires the portal permission **Reporting → Reports within the category (Read)** for each intended category.
+
+Report output rows are interpreted using the returned fields metadata, not assumed column positions. A binding cannot be approved until expected and observed schema fingerprints match, the sample produces a finite value, and reconciliation is within tolerance. Report refresh is restricted to 4, 12, or 24 hours in this application. Workers use bounded tenant concurrency, jitter, backoff, and provider response guidance; dashboards read only materialized observations.
+
+### Fail-closed health model
+
+The following states are unavailable—not zero and not a fallback value:
+
+- missing, archived, tenant-mismatched, location-unassigned, or capability-incomplete connection;
+- missing/ambiguous tenant-location binding;
+- archived/unapproved report or report identity mismatch;
+- missing required parameter or business-unit mapping;
+- expected/observed schema drift;
+- failed/missing sample or reconciliation evidence;
+- source-contract fingerprint/version mismatch;
+- non-finite, invalid, future, or stale observation.
+
+Only a structurally valid, identity-matched historical observation may be displayed as **last valid** context. It is never counted as the current KPI actual.
 
 ## Domo ingestion
 

@@ -33,6 +33,8 @@ export interface DemoServiceTitanConnectionInput {
 export interface DemoConnectionStore {
   schemaVersion: typeof DEMO_CONNECTION_SCHEMA_VERSION;
   connections: DemoServiceTitanConnection[];
+  availability?: "unavailable";
+  unavailableReason?: string;
 }
 
 export interface ConnectionValidationIssue {
@@ -155,50 +157,171 @@ export function setDemoConnectionStatus(store: DemoConnectionStore, id: string, 
   return { ...store, connections: store.connections.map((connection) => connection.id === id ? { ...connection, status, updatedAt: now } : connection) };
 }
 
-function validConnection(value: unknown): value is DemoServiceTitanConnection {
+type UnknownRecord = Record<PropertyKey, unknown>;
+
+const STORE_KEYS = new Set(["schemaVersion", "connections"]);
+const CONNECTION_KEYS = new Set([
+  "id",
+  "tenantId",
+  "displayName",
+  "environment",
+  "maskedClientId",
+  "maskedAppKey",
+  "secretConfigured",
+  "locationIds",
+  "status",
+  "capabilities",
+  "lastValidatedAt",
+  "updatedAt",
+]);
+const CREDENTIAL_KEY_PARTS = ["secret", "password", "authorization", "token", "clientid", "appkey", "apikey", "bearer"];
+const SAFE_CREDENTIAL_METADATA_KEYS = new Set(["maskedclientid", "maskedappkey", "secretconfigured"]);
+
+function isRecord(value: unknown): value is UnknownRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactDataKeys(value: UnknownRecord, allowed: ReadonlySet<string>): boolean {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length === 0 || keys.some((key) => typeof key !== "string" || !allowed.has(key))) return false;
+  return keys.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return Boolean(descriptor && "value" in descriptor);
+  });
+}
+
+function hasCredentialLikeKey(value: unknown, seen = new WeakSet<object>()): boolean {
   if (!value || typeof value !== "object") return false;
-  const item = value as DemoServiceTitanConnection;
-  return typeof item.id === "string" && Boolean(item.id)
-    && typeof item.tenantId === "string" && Boolean(item.tenantId)
-    && typeof item.displayName === "string" && Boolean(item.displayName)
-    && (item.environment === "production" || item.environment === "integration")
-    && typeof item.maskedClientId === "string" && typeof item.maskedAppKey === "string"
-    && typeof item.secretConfigured === "boolean" && Array.isArray(item.locationIds)
-    && item.locationIds.every((locationId) => typeof locationId === "string")
-    && ["ready", "needs-attention", "archived"].includes(item.status)
-    && Array.isArray(item.capabilities) && item.capabilities.every((capability) => typeof capability === "string")
-    && typeof item.updatedAt === "string" && !Number.isNaN(Date.parse(item.updatedAt))
-    && !("clientSecret" in item) && !("clientId" in item) && !("appKey" in item);
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => hasCredentialLikeKey(item, seen));
+
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") return true;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor)) return true;
+    const compactKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    if (!SAFE_CREDENTIAL_METADATA_KEYS.has(compactKey) && CREDENTIAL_KEY_PARTS.some((part) => compactKey.includes(part))) return true;
+    if (hasCredentialLikeKey(descriptor.value, seen)) return true;
+  }
+  return false;
+}
+
+function validConnection(value: unknown): value is DemoServiceTitanConnection {
+  if (!isRecord(value) || !hasExactDataKeys(value, CONNECTION_KEYS)) return false;
+  return typeof value.id === "string" && Boolean(value.id)
+    && typeof value.tenantId === "string" && Boolean(value.tenantId)
+    && typeof value.displayName === "string" && Boolean(value.displayName)
+    && (value.environment === "production" || value.environment === "integration")
+    && typeof value.maskedClientId === "string" && typeof value.maskedAppKey === "string"
+    && typeof value.secretConfigured === "boolean" && Array.isArray(value.locationIds)
+    && value.locationIds.every((locationId) => typeof locationId === "string")
+    && (value.status === "ready" || value.status === "needs-attention" || value.status === "archived")
+    && Array.isArray(value.capabilities) && value.capabilities.every((capability) => typeof capability === "string")
+    && (value.lastValidatedAt === undefined || (typeof value.lastValidatedAt === "string" && !Number.isNaN(Date.parse(value.lastValidatedAt))))
+    && typeof value.updatedAt === "string" && !Number.isNaN(Date.parse(value.updatedAt));
+}
+
+function cloneConnection(item: DemoServiceTitanConnection): DemoServiceTitanConnection {
+  const clone: DemoServiceTitanConnection = {
+    id: item.id,
+    tenantId: item.tenantId,
+    displayName: item.displayName,
+    environment: item.environment,
+    maskedClientId: item.maskedClientId,
+    maskedAppKey: item.maskedAppKey,
+    secretConfigured: item.secretConfigured,
+    locationIds: item.locationIds.map((locationId) => locationId),
+    status: item.status,
+    capabilities: item.capabilities.map((capability) => capability),
+    updatedAt: item.updatedAt,
+  };
+  if (item.lastValidatedAt !== undefined) clone.lastValidatedAt = item.lastValidatedAt;
+  return clone;
+}
+
+function unavailableConnectionStore(reason: string): DemoConnectionStore {
+  return {
+    schemaVersion: DEMO_CONNECTION_SCHEMA_VERSION,
+    availability: "unavailable",
+    unavailableReason: reason,
+    connections: [],
+  };
 }
 
 export function normalizeConnectionStore(value: unknown): DemoConnectionStore | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as DemoConnectionStore;
-  if (candidate.schemaVersion !== DEMO_CONNECTION_SCHEMA_VERSION || !Array.isArray(candidate.connections) || !candidate.connections.every(validConnection)) return null;
-  if (new Set(candidate.connections.map((item) => item.id)).size !== candidate.connections.length) return null;
-  const active = candidate.connections.filter((item) => item.status !== "archived");
-  if (new Set(active.map((item) => item.tenantId)).size !== active.length) return null;
-  if (new Set(active.flatMap((item) => item.locationIds)).size !== active.flatMap((item) => item.locationIds).length) return null;
-  return { schemaVersion: DEMO_CONNECTION_SCHEMA_VERSION, connections: candidate.connections.map((item) => ({ ...item, locationIds: [...item.locationIds], capabilities: [...item.capabilities] })) };
+  try {
+    if (hasCredentialLikeKey(value) || !isRecord(value) || !hasExactDataKeys(value, STORE_KEYS)) return null;
+    if (value.schemaVersion !== DEMO_CONNECTION_SCHEMA_VERSION || !Array.isArray(value.connections)) return null;
+    if (!value.connections.every(validConnection)) return null;
+    const connections = value.connections.map((item) => cloneConnection(item));
+    if (new Set(connections.map((item) => item.id)).size !== connections.length) return null;
+    const active = connections.filter((item) => item.status !== "archived");
+    if (new Set(active.map((item) => item.tenantId)).size !== active.length) return null;
+    const activeLocationIds = active.flatMap((item) => item.locationIds);
+    if (new Set(activeLocationIds).size !== activeLocationIds.length) return null;
+    return {
+      schemaVersion: DEMO_CONNECTION_SCHEMA_VERSION,
+      connections,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function readConnectionStore(storage: ReadStorage | undefined = browserStorage()): DemoConnectionStore {
-  const fallback = createSeedConnectionStore();
-  if (!storage) return fallback;
+  if (!storage) return unavailableConnectionStore("Browser connection storage is unavailable.");
+
+  let raw: string | null;
   try {
-    const raw = storage.getItem(DEMO_CONNECTION_STORAGE_KEY);
-    if (!raw) { storage.setItem?.(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(fallback)); return fallback; }
-    return normalizeConnectionStore(JSON.parse(raw)) ?? fallback;
-  } catch { return fallback; }
+    raw = storage.getItem(DEMO_CONNECTION_STORAGE_KEY);
+  } catch {
+    return unavailableConnectionStore("Browser connection storage could not be read.");
+  }
+
+  if (raw === null) {
+    const seeded = createSeedConnectionStore();
+    if (storage.setItem) {
+      try {
+        storage.setItem(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(seeded));
+      } catch {
+        return unavailableConnectionStore("Browser connection storage could not be initialized.");
+      }
+    }
+    return seeded;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return unavailableConnectionStore("Stored ServiceTitan connections contain malformed JSON.");
+  }
+  return normalizeConnectionStore(parsed)
+    ?? unavailableConnectionStore("Stored ServiceTitan connections are unsafe or invalid.");
 }
 
 export function writeConnectionStore(store: DemoConnectionStore, storage: WriteStorage | undefined = browserStorage()): boolean {
-  if (!storage || !normalizeConnectionStore(store)) return false;
-  try { storage.setItem(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(store)); return true; } catch { return false; }
+  if (!storage) return false;
+  const normalized = normalizeConnectionStore(store);
+  if (!normalized) return false;
+  try {
+    storage.setItem(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(normalized));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resetConnectionStore(storage: WriteStorage | undefined = browserStorage()): DemoConnectionStore {
   const seeded = createSeedConnectionStore();
-  if (storage) { try { storage.setItem(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(seeded)); } catch { /* return in-memory seeds */ } }
-  return seeded;
+  if (!storage) return unavailableConnectionStore("Browser connection storage is unavailable.");
+  try {
+    storage.setItem(DEMO_CONNECTION_STORAGE_KEY, JSON.stringify(seeded));
+    return seeded;
+  } catch {
+    return unavailableConnectionStore("Browser connection storage could not be reset.");
+  }
 }

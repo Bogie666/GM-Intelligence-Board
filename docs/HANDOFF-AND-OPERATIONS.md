@@ -20,6 +20,21 @@ A future portfolio administrator should onboard and maintain a brand without eng
 12. Invite users and assign tenant/location roles.
 13. Publish the GM layout only after data confidence is acceptable.
 
+### Saved ServiceTitan report onboarding
+
+1. Confirm the tenant connection is ready, assigned to the exact location, and has **Reporting → Reports within the category (Read)** permission.
+2. Discover the category and report through Reporting API v2; store immutable category/report IDs, not the mutable display name.
+3. Inspect the report description and record `modifiedOn`, typed parameters, accepted/dynamic values, and returned fields.
+4. Bind every required parameter. Dynamic business-unit values must map exactly to the governed location and cannot be shared as an ambiguous tenant-wide wildcard.
+5. Choose the controlled reduction: sum, average, row count, latest, or ratio. Ratio fields must be distinct numeric fields.
+6. Run a bounded sample, validate the returned fields metadata, and calculate the KPI value.
+7. Reconcile the result to an approved reference for the same tenant, location, timezone, and period. Record expected/reference values, absolute tolerance, delta, row count, and timestamps.
+8. Approve only when expected and observed schema fingerprints match and both sample and reconciliation pass.
+9. Publish the KPI only after every scoped location has one ready binding and a fresh materialized observation.
+10. Monitor `modifiedOn`, schema fingerprint, cadence freshness, and report execution. Any drift or stale observation must fail closed.
+
+Long-running reports may return `202` from `POST .../data/query`; poll `GET data-queries/{token}` until completion and cancel abandoned queries. Do not run reports from dashboard requests.
+
 ### Domo dataset onboarding
 
 1. Create a Domo OAuth client with the `data` scope and store its credentials only in encrypted server configuration.
@@ -93,15 +108,18 @@ When a KPI looks wrong:
 - new cross-source identity/deduplication logic
 - change to a portfolio-standard financial definition
 
-## Prototype reset
+## Demo prototype reset
 
-To reset browser-local test customizations, clear these local-storage keys:
+The following applies only when `APP_MODE=demo`. To reset browser-local test customizations, clear these local-storage keys:
 
 - `gmib.hidden.v1`
 - `gmib.orders.v1`
 - `gmib.custom-metrics.v1`
+- `gmib.custom-kpis.v2` (migration source only)
+- `gmib.custom-kpis.v3`
 - `gmib.role-templates.v1`
 - `gmib.servicetitan-connections.v1`
+- `gmib.servicetitan-sources.v2`
 - `gmib.target-budget.v1`
 
-No production data or credentials exist in the prototype. ServiceTitan credential inputs are discarded after masked demo metadata is created.
+Demo mode contains no production data or credentials; its ServiceTitan credential inputs are discarded after masked demo metadata is created. Staging/production mode uses authenticated Supabase persistence and stores only approved opaque secret references. Follow [`PRODUCTION-PILOT-READINESS.md`](PRODUCTION-PILOT-READINESS.md) for guarded tenant onboarding and the current live-KPI release boundary.
