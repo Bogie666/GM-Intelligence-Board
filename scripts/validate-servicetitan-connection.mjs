@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GCP_REFERENCE = /^gcp-secret:\/\/(projects\/[A-Za-z0-9._-]+\/secrets\/[A-Za-z0-9._-]+\/versions\/[A-Za-z0-9._-]+)$/;
 const ENV_REFERENCE = /^env:\/\/([A-Z][A-Z0-9_]{1,127})$/;
+const VAULT_REFERENCE = /^supabase-vault:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 
 const HELP = `Usage:
   NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \\
@@ -21,6 +22,7 @@ The managed secret must contain JSON with exactly these required string fields:
   {"clientId":"...","clientSecret":"...","appKey":"..."}
 
 Supported references:
+  supabase-vault://SECRET_UUID
   gcp-secret://projects/PROJECT/secrets/SECRET/versions/VERSION
   env://UPPERCASE_ENVIRONMENT_VARIABLE
 
@@ -113,7 +115,7 @@ function parseCredential(raw) {
   return { clientId: parsed.clientId, clientSecret: parsed.clientSecret, appKey: parsed.appKey };
 }
 
-async function resolveSecret(reference) {
+async function resolveSecret(reference, client, input) {
   const envMatch = reference.match(ENV_REFERENCE);
   if (envMatch) {
     const raw = process.env[envMatch[1]];
@@ -137,8 +139,17 @@ async function resolveSecret(reference) {
     return parseCredential(stdout);
   }
 
-  if (reference.startsWith("supabase-vault://")) {
-    throw new Error("supabase-vault references require a dedicated worker resolver and are not supported by this operator probe");
+  const vaultMatch = reference.match(VAULT_REFERENCE);
+  if (vaultMatch) {
+    const { data, error } = await client.rpc("resolve_service_titan_connection_secret", {
+      p_organization_id: input.organizationId,
+      p_connection_id: input.connectionId,
+      p_purpose: "validation",
+    });
+    if (error || typeof data !== "string" || !data) {
+      throw new Error("Supabase Vault lookup failed");
+    }
+    return parseCredential(data);
   }
   throw new Error("secret reference uses an unsupported scheme");
 }
@@ -203,7 +214,7 @@ async function probeServiceTitan(connection, credential) {
   return ["settings.business_units.read"];
 }
 
-async function setValidationState(client, input, expectedSecretReference, status, capabilities) {
+async function setValidationState(client, input, expectedSecretReference, expectedCredentialRevision, status, capabilities) {
   const payload = { status, last_validated_at: new Date().toISOString() };
   if (capabilities) payload.capabilities = capabilities;
   const { data, error } = await client
@@ -212,6 +223,7 @@ async function setValidationState(client, input, expectedSecretReference, status
     .eq("organization_id", input.organizationId)
     .eq("id", input.connectionId)
     .eq("secret_reference", expectedSecretReference)
+    .eq("configuration_revision", expectedCredentialRevision)
     .not("status", "in", "(disabled,archived)")
     .select("id")
     .maybeSingle();
@@ -251,7 +263,7 @@ async function main() {
 
   const { data: connection, error: lookupError } = await client
     .from("service_titan_connections")
-    .select("id, organization_id, service_titan_tenant_id, environment, secret_reference, status")
+    .select("id, organization_id, service_titan_tenant_id, environment, secret_reference, configuration_revision, status")
     .eq("organization_id", input.organizationId)
     .eq("id", input.connectionId)
     .maybeSingle();
@@ -269,16 +281,16 @@ async function main() {
   }
 
   try {
-    const credential = await resolveSecret(connection.secret_reference);
+    const credential = await resolveSecret(connection.secret_reference, client, input);
     const capabilities = await probeServiceTitan(connection, credential);
-    await setValidationState(client, input, connection.secret_reference, "ready", capabilities);
+    await setValidationState(client, input, connection.secret_reference, connection.configuration_revision, "ready", capabilities);
     console.log("ServiceTitan connection validated and marked ready.");
     console.log(`Organization ID: ${input.organizationId}`);
     console.log(`Connection ID: ${input.connectionId}`);
     console.log(`Capabilities: ${capabilities.join(", ")}`);
   } catch (error) {
     try {
-      await setValidationState(client, input, connection.secret_reference, "needs_attention", null);
+      await setValidationState(client, input, connection.secret_reference, connection.configuration_revision, "needs_attention", null);
     } catch {
       // Preserve the primary validation failure and avoid printing database/provider details.
     }

@@ -197,6 +197,7 @@ begin
 
   if pg_catalog.has_table_privilege('authenticated', 'public.service_titan_connections', 'SELECT')
      or pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'secret_reference', 'SELECT')
+     or pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'configuration_revision', 'SELECT')
      or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'id', 'SELECT')
      or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'organization_id', 'SELECT')
      or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'service_titan_tenant_id', 'SELECT')
@@ -208,6 +209,15 @@ begin
      or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'created_at', 'SELECT')
      or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_connections', 'updated_at', 'SELECT') then
     raise exception 'service_titan_connections safe-column SELECT boundary is incorrect';
+  end if;
+
+  if pg_catalog.has_schema_privilege('authenticated', 'vault', 'USAGE')
+     or pg_catalog.has_schema_privilege('anon', 'vault', 'USAGE')
+     or pg_catalog.has_table_privilege('authenticated', 'vault.secrets', 'SELECT,INSERT,UPDATE,DELETE')
+     or pg_catalog.has_table_privilege('authenticated', 'vault.decrypted_secrets', 'SELECT')
+     or pg_catalog.has_table_privilege('anon', 'vault.secrets', 'SELECT,INSERT,UPDATE,DELETE')
+     or pg_catalog.has_table_privilege('anon', 'vault.decrypted_secrets', 'SELECT') then
+    raise exception 'browser roles must not access Supabase Vault schema, ciphertext, or decrypted secrets';
   end if;
 
   if pg_catalog.has_table_privilege('anon', 'public.schema_releases', 'SELECT,INSERT,UPDATE,DELETE')
@@ -229,7 +239,13 @@ begin
      or pg_catalog.has_function_privilege('authenticated', 'public.remove_empty_qa_brand_from_portfolio(uuid,uuid,uuid,uuid,text,text)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('service_role', 'public.remove_empty_qa_brand_from_portfolio(uuid,uuid,uuid,uuid,text,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.register_service_titan_connection(uuid,text,text,text,text,uuid)', 'EXECUTE')
-     or not pg_catalog.has_function_privilege('authenticated', 'public.register_service_titan_connection(uuid,text,text,text,text,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.register_service_titan_connection(uuid,text,text,text,text,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.register_service_titan_connection_with_credentials(uuid,text,text,text,text,text,text,uuid)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.register_service_titan_connection_with_credentials(uuid,text,text,text,text,text,text,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.rotate_service_titan_connection_credentials(uuid,uuid,text,text,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.rotate_service_titan_connection_credentials(uuid,uuid,text,text,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.resolve_service_titan_connection_secret(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.resolve_service_titan_connection_secret(uuid,uuid,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.disable_service_titan_connection(uuid,uuid)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.disable_service_titan_connection(uuid,uuid)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.can_view_kpi_definition(uuid,uuid)', 'EXECUTE')
@@ -243,7 +259,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260818001200_atomic_qa_portfolio_cleanup' then
+     or release_marker is distinct from '20260818001400_configuration_revision_race_guard' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -269,7 +285,8 @@ begin
       'public.can_read_profile(uuid)'::pg_catalog.regprocedure,
       'public.can_view_kpi_definition(uuid,uuid)'::pg_catalog.regprocedure,
       'public.can_view_current_kpi_observation(uuid,uuid,text,bigint,text)'::pg_catalog.regprocedure,
-      'public.register_service_titan_connection(uuid,text,text,text,text,uuid)'::pg_catalog.regprocedure,
+      'public.register_service_titan_connection_with_credentials(uuid,text,text,text,text,text,text,uuid)'::pg_catalog.regprocedure,
+      'public.rotate_service_titan_connection_credentials(uuid,uuid,text,text,text)'::pg_catalog.regprocedure,
       'public.disable_service_titan_connection(uuid,uuid)'::pg_catalog.regprocedure,
       'public.has_portfolio_access()'::pg_catalog.regprocedure,
       'public.can_access_portfolio_brand(uuid)'::pg_catalog.regprocedure,
@@ -313,7 +330,8 @@ begin
         'govern_report_source_approval',
         'govern_kpi_binding_approval',
         'govern_kpi_definition_approval',
-        'govern_kpi_target_approval'
+        'govern_kpi_target_approval',
+        'enforce_service_titan_observation_configuration_revision'
       ])
       and not procedure.prosecdef
   ) then
@@ -335,6 +353,7 @@ begin
       ('custom_kpi_location_bindings', 'custom_kpi_bindings_05_source_pin'),
       ('custom_kpi_location_bindings', 'custom_kpi_bindings_15_govern_approval'),
       ('custom_kpi_binding_evidence', 'custom_kpi_binding_evidence_append_only'),
+      ('kpi_observations', 'enforce_service_titan_observation_configuration_revision'),
       ('kpi_observations', 'kpi_observations_bind_identity'),
       ('kpi_observations', 'kpi_observations_append_only'),
       ('kpi_targets', 'kpi_targets_10_protect_governance'),
@@ -401,7 +420,7 @@ begin
 
   if not public.is_operator_resolvable_secret_reference('gcp-secret://projects/demo/secrets/st-key/versions/latest')
      or not public.is_operator_resolvable_secret_reference('env://SERVICETITAN_SECRET_REF')
-     or public.is_operator_resolvable_secret_reference('supabase-vault://f15f7d3e-1111-4444-8888-7d7d7d7d7d7d')
+     or not public.is_operator_resolvable_secret_reference('supabase-vault://f15f7d3e-1111-4444-8888-7d7d7d7d7d7d')
      or public.is_operator_resolvable_secret_reference('env://lowercase')
      or public.is_operator_resolvable_secret_reference('gcp-secret://projects/demo/secrets/st-key/versions/zero') then
     raise exception 'Operator-resolvable secret-reference validation is incorrect';
@@ -726,6 +745,7 @@ declare
   affected_rows bigint;
   denied boolean := false;
   v_connection_id uuid;
+  v_vault_connection_id uuid;
 begin
   if (select pg_catalog.count(*) from public.organizations) <> 1
      or not exists (
@@ -759,12 +779,29 @@ begin
     raise exception 'authenticated owner same-tenant INSERT failed';
   end if;
 
-  v_connection_id := public.register_service_titan_connection(
+  denied := false;
+  begin
+    insert into public.locations (
+      organization_id, location_key, brand_name, display_name, timezone
+    ) values (
+      'a0000000-0000-4000-8000-000000000001',
+      'unsupported-timezone', 'Tenant A', 'Unsupported timezone', 'Europe/London'
+    );
+  exception when check_violation then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'database accepted a timezone outside the supported United States allowlist';
+  end if;
+
+  v_connection_id := public.register_service_titan_connection_with_credentials(
     'a0000000-0000-4000-8000-000000000001',
     'schema-tenant-a-st',
     'Schema Tenant A ServiceTitan',
     'integration',
-    'gcp-secret://projects/schema/secrets/tenant-a/versions/latest',
+    'schema-primary-client-id',
+    'schema-primary-client-secret',
+    'schema-primary-st-app-key',
     'a2000000-0000-4000-8000-000000000001'
   );
   if v_connection_id is null
@@ -776,6 +813,82 @@ begin
          and assignment.revoked_at is null
      ) then
     raise exception 'atomic same-tenant connection registration failed';
+  end if;
+
+  v_vault_connection_id := public.register_service_titan_connection_with_credentials(
+    'a0000000-0000-4000-8000-000000000001',
+    'schema-vault-tenant',
+    'Schema Vault ServiceTitan',
+    'integration',
+    'schema-client-id',
+    'schema-client-secret-value',
+    'schema-st-app-key-value',
+    null
+  );
+  if v_vault_connection_id is null
+     or not exists (
+       select 1 from public.service_titan_connections connection
+       where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+         and connection.id = v_vault_connection_id
+         and connection.service_titan_tenant_id = 'schema-vault-tenant'
+         and connection.status = 'needs_attention'
+     ) then
+    raise exception 'Vault-backed same-tenant connection registration failed';
+  end if;
+
+  denied := false;
+  begin
+    perform public.register_service_titan_connection(
+      'a0000000-0000-4000-8000-000000000001',
+      'legacy-arbitrary-vault', 'Legacy arbitrary Vault', 'integration',
+      'supabase-vault://f15f7d3e-1111-4444-8888-7d7d7d7d7d7d', null
+    );
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'legacy browser RPC accepted an arbitrary Vault reference';
+  end if;
+
+  if not public.rotate_service_titan_connection_credentials(
+    'a0000000-0000-4000-8000-000000000001', v_vault_connection_id,
+    'schema-rotated-client-id', 'schema-rotated-client-secret', 'schema-rotated-st-app-key'
+  ) then
+    raise exception 'same-tenant Vault credential rotation failed';
+  end if;
+  if not exists (
+    select 1 from public.audit_events event
+    where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
+      and event.resource_id = v_vault_connection_id
+      and event.action = 'servicetitan.secret.rotate'
+  ) then
+    raise exception 'credential rotation audit event was not recorded';
+  end if;
+
+  denied := false;
+  begin
+    perform public.resolve_service_titan_connection_secret(
+      'a0000000-0000-4000-8000-000000000001', v_vault_connection_id, 'validation'
+    );
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'authenticated tenant owner resolved a Vault credential';
+  end if;
+
+  if exists (
+    select 1 from public.audit_events event
+    where event.resource_table = 'service_titan_connections'
+      and event.resource_id = v_vault_connection_id
+      and (
+        coalesce(event.before_state::text, '') like '%schema-client-secret-value%'
+        or coalesce(event.after_state::text, '') like '%schema-client-secret-value%'
+        or coalesce(event.before_state::text, '') like '%schema-st-app-key-value%'
+        or coalesce(event.after_state::text, '') like '%schema-st-app-key-value%'
+      )
+  ) then
+    raise exception 'credential value was exposed through configuration audit JSON';
   end if;
 
   -- Safe connection metadata is readable, but the managed-secret locator is not.
@@ -855,6 +968,34 @@ begin
     raise exception 'cross-tenant connection registration was not denied';
   end if;
 
+  denied := false;
+  begin
+    perform public.register_service_titan_connection_with_credentials(
+      'b0000000-0000-4000-8000-000000000002',
+      'cross-vault-st', 'Cross Tenant Vault', 'integration',
+      'cross-client-id', 'cross-client-secret', 'cross-st-app-key',
+      'b3000000-0000-4000-8000-000000000002'
+    );
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'cross-tenant Vault credential registration was not denied';
+  end if;
+
+  denied := false;
+  begin
+    perform public.rotate_service_titan_connection_credentials(
+      'b0000000-0000-4000-8000-000000000002', v_vault_connection_id,
+      'cross-client-id', 'cross-client-secret', 'cross-st-app-key'
+    );
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'cross-tenant Vault credential rotation was not denied';
+  end if;
+
   if not public.disable_service_titan_connection(
     'a0000000-0000-4000-8000-000000000001', v_connection_id
   ) then
@@ -902,6 +1043,28 @@ $rls_behavior$;
 
 reset role;
 
+-- Simulate a compromised metadata write that points a different connection at another
+-- connection's Vault UUID. The service resolver must reject it by exact Vault secret name.
+do $confused_deputy_fixture$
+declare
+  source_reference text;
+begin
+  select connection.secret_reference into source_reference
+  from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-vault-tenant';
+  insert into public.service_titan_connections (
+    id, organization_id, service_titan_tenant_id, display_name, environment,
+    secret_reference, capabilities, status, last_validated_at
+  ) values (
+    'a4000000-0000-4000-8000-000000000099',
+    'a0000000-0000-4000-8000-000000000001',
+    'schema-confused-deputy', 'Schema Confused Deputy', 'integration',
+    source_reference, '[]'::jsonb, 'ready', pg_catalog.now()
+  );
+end
+$confused_deputy_fixture$;
+
 -- Prove the operator-wide grant is service-role-only, idempotent, and explicit membership based.
 set local role service_role;
 select pg_catalog.set_config('request.jwt.claim.role', 'service_role', true);
@@ -911,7 +1074,100 @@ do $operator_access$
 declare
   active_tenant_count integer;
   tenant_count integer;
+  vault_connection_id uuid;
+  vault_secret_id uuid;
+  resolved_payload jsonb;
+  encrypted_payload text;
+  retired_secret_id uuid;
+  denied boolean := false;
 begin
+  select connection.id,
+         pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
+    into vault_connection_id, vault_secret_id
+  from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-vault-tenant';
+
+  resolved_payload := public.resolve_service_titan_connection_secret(
+    'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'validation'
+  )::jsonb;
+  if resolved_payload is distinct from pg_catalog.jsonb_build_object(
+    'clientId', 'schema-rotated-client-id',
+    'clientSecret', 'schema-rotated-client-secret',
+    'appKey', 'schema-rotated-st-app-key'
+  ) then
+    raise exception 'service-role Vault resolver returned an incorrect rotated credential payload';
+  end if;
+  if not exists (
+    select 1 from public.audit_events event
+    where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
+      and event.resource_id = vault_connection_id
+      and event.action = 'servicetitan.secret.resolve.validation'
+      and event.before_state is null and event.after_state is null
+  ) then
+    raise exception 'credential-free Vault resolution audit event was not recorded';
+  end if;
+
+  denied := false;
+  begin
+    perform public.resolve_service_titan_connection_secret(
+      'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'ingestion'
+    );
+  exception when invalid_parameter_value then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'ingestion credential resolution did not fail closed before validation';
+  end if;
+
+  update public.service_titan_connections
+  set status = 'ready', last_validated_at = pg_catalog.now()
+  where organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and id = vault_connection_id;
+  resolved_payload := public.resolve_service_titan_connection_secret(
+    'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'ingestion'
+  )::jsonb;
+  if resolved_payload ->> 'clientId' is distinct from 'schema-rotated-client-id' then
+    raise exception 'ready ingestion resolver did not return the current configuration revision';
+  end if;
+
+  denied := false;
+  begin
+    perform public.resolve_service_titan_connection_secret(
+      'a0000000-0000-4000-8000-000000000001',
+      'a4000000-0000-4000-8000-000000000099', 'ingestion'
+    );
+  exception when no_data_found then
+    denied := true;
+  end;
+  if not denied then
+    raise exception 'resolver accepted another connection''s Vault UUID';
+  end if;
+
+  select secret.secret into encrypted_payload
+  from vault.secrets secret
+  where secret.id = vault_secret_id;
+  if encrypted_payload is null
+     or encrypted_payload like '%schema-rotated-client-secret%'
+     or encrypted_payload like '%schema-rotated-st-app-key%' then
+    raise exception 'Vault ciphertext storage exposed a plaintext credential value';
+  end if;
+
+  select pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
+    into retired_secret_id
+  from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-tenant-a-st';
+  if exists (select 1 from vault.secrets secret where secret.id = retired_secret_id)
+     or not exists (
+       select 1 from public.audit_events event
+       where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
+         and event.action = 'servicetitan.secret.retire'
+         and event.resource_table = 'service_titan_connections'
+     ) then
+    raise exception 'disabled connection retained its Vault secret or omitted retirement audit evidence';
+  end if;
+
   select pg_catalog.count(*)::integer into active_tenant_count
   from public.organizations organization
   where organization.status = 'active';
@@ -1026,7 +1282,7 @@ begin
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260818001200_atomic_qa_portfolio_cleanup' then
+  if release_ready is distinct from true or release_marker is distinct from '20260818001400_configuration_revision_race_guard' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end

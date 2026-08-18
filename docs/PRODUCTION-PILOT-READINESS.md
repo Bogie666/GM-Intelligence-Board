@@ -84,6 +84,8 @@ Apply migrations in timestamp order:
 12. `20260818001000_champions_group_portfolio.sql`
 13. `20260818001100_portfolio_audit_trigger_fix.sql`
 14. `20260818001200_atomic_qa_portfolio_cleanup.sql`
+15. `20260818001300_admin_credential_vault.sql`
+16. `20260818001400_configuration_revision_race_guard.sql`
 
 Verify migration state before application promotion:
 
@@ -107,7 +109,7 @@ GM_DEFAULT_PORTFOLIO_ID=c1000000-0000-4000-8000-000000000001
 
 `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Normal web requests do not require the service-role key.
 
-The application release is compiled to require the exact database marker `20260818001200_atomic_qa_portfolio_cleanup`; the expected marker is intentionally not environment-configurable.
+The application release is compiled to require the exact database marker `20260818001400_configuration_revision_race_guard`; the expected marker is intentionally not environment-configurable.
 
 Private-pilot user creation is enforced at the database boundary: only a service-role-preauthorized email can be created, the authorization expires after five minutes, and it is consumed once. The bootstrap script performs this authorization immediately before `admin.createUser()`. If Supabase Management API access becomes available, also disable provider-level public signup as defense in depth.
 

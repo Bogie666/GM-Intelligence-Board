@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { openPortfolioBrandAction } from "@/app/portfolio/actions";
+import { ChampionsGroupLogo } from "@/components/champions-group-logo";
 import { SignOutButton } from "@/components/sign-out-button";
 import { getAppConfig } from "@/lib/env";
 import { getPortfolioOverview, type PortfolioBrandSummary } from "@/lib/portfolio-context";
@@ -46,7 +47,7 @@ export default async function PortfolioPage() {
   return (
     <main className="production-shell">
       <header className="production-topbar">
-        <Link href="/portfolio" className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{portfolio.name}</small></div></Link>
+        <Link href="/portfolio" className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{portfolio.name}</small></div></Link>
         <div><span className="production-mode">{mode}</span><SignOutButton /></div>
       </header>
       <div className="production-page portfolio-page">

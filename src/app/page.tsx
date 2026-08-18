@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { Dashboard } from "@/components/dashboard";
+import { ChampionsGroupLogo } from "@/components/champions-group-logo";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import { isAdminRole } from "@/lib/auth";
@@ -52,7 +53,7 @@ export default async function Home() {
   return (
     <main className="production-shell">
       <header className="production-topbar">
-        <div className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></div>
+        <div className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></div>
         <div>{tenant.hasPortfolioAccess ? <a className="button secondary" href="/portfolio">Champions portfolio</a> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/" /><span className="production-mode">{config.mode}</span><SignOutButton /></div>
       </header>
       <div className="production-home">

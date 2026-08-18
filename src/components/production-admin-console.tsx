@@ -8,6 +8,7 @@ import {
   createConnectionAction,
   createLocationAction,
   disableConnectionAction,
+  rotateConnectionCredentialsAction,
   updateLocationAction,
   updateOrganizationAction,
   type AdminActionState,
@@ -18,10 +19,31 @@ import type {
   ServiceTitanConnection,
   TenantLocation,
 } from "@/lib/tenant-context";
+import { ChampionsGroupLogo } from "@/components/champions-group-logo";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 
 const INITIAL_ADMIN_ACTION_STATE: AdminActionState = { status: "idle", message: "" };
+
+const UNITED_STATES_TIMEZONES = [
+  { value: "America/New_York", label: "Eastern Time" },
+  { value: "America/Chicago", label: "Central Time" },
+  { value: "America/Denver", label: "Mountain Time" },
+  { value: "America/Phoenix", label: "Mountain Time (Arizona, no DST)" },
+  { value: "America/Los_Angeles", label: "Pacific Time" },
+  { value: "America/Anchorage", label: "Alaska Time" },
+  { value: "Pacific/Honolulu", label: "Hawaii Time" },
+] as const;
+
+function TimezoneSelect({ defaultValue = "America/Chicago" }: { defaultValue?: string }) {
+  return (
+    <select name="timezone" required defaultValue={defaultValue}>
+      {UNITED_STATES_TIMEZONES.map((timezone) => (
+        <option key={timezone.value} value={timezone.value}>{timezone.label} — {timezone.value}</option>
+      ))}
+    </select>
+  );
+}
 
 function SubmitButton({ children, danger = false }: { children: React.ReactNode; danger?: boolean }) {
   const { pending } = useFormStatus();
@@ -89,7 +111,7 @@ function CreateLocationForm() {
         <label>Location key<input name="locationKey" required minLength={3} maxLength={64} placeholder="denver-west" /></label>
         <label>Brand name<input name="brandName" required maxLength={120} placeholder="Mountain Air" /></label>
         <label>Display name<input name="displayName" required maxLength={160} placeholder="Denver West" /></label>
-        <label>IANA timezone<input name="timezone" required maxLength={100} placeholder="America/Denver" /></label>
+        <label>United States timezone<TimezoneSelect /></label>
         <div className="production-form-footer">
           <span>Keys are tenant-unique and cannot contain spaces.</span>
           <SubmitButton>Add location</SubmitButton>
@@ -124,7 +146,7 @@ function LocationEditor({ location }: { location: TenantLocation }) {
         <label>Location key<input name="locationKey" required defaultValue={location.location_key} /></label>
         <label>Brand name<input name="brandName" required defaultValue={location.brand_name} /></label>
         <label>Display name<input name="displayName" required defaultValue={location.display_name} /></label>
-        <label>IANA timezone<input name="timezone" required defaultValue={location.timezone} /></label>
+        <label>United States timezone<TimezoneSelect defaultValue={location.timezone} /></label>
         <div className="production-form-footer"><span>Tenant row: <code>{location.id}</code></span><SubmitButton>Save location</SubmitButton></div>
       </form>
       <ActionNotice state={updateState} />
@@ -144,20 +166,22 @@ function CreateConnectionForm({ locations }: { locations: TenantLocation[] }) {
   return (
     <section className="production-panel">
       <div className="production-panel-heading">
-        <div><span>Credential-free metadata</span><h2>Add ServiceTitan connection</h2></div>
+        <div><span>Encrypted credential onboarding</span><h2>Add ServiceTitan connection</h2></div>
       </div>
       <p className="production-boundary-note">
-        This form never accepts a client ID, client secret, app key, token, or password. Store credentials in an approved secret manager and enter only its opaque reference.
+        Credentials are encrypted in the managed Supabase Vault when you submit. They are never displayed again or stored in connection and audit records.
       </p>
-      <form action={action} className="production-form-grid">
+      <form action={action} className="production-form-grid" autoComplete="off">
         <label>ServiceTitan tenant ID<input name="tenantId" required maxLength={128} autoComplete="off" /></label>
-        <label>Display name<input name="displayName" required maxLength={160} placeholder="Primary ServiceTitan" /></label>
+        <label>Display name<input name="displayName" required maxLength={160} placeholder="LEX DFW Production" /></label>
         <label>Environment<select name="environment" defaultValue="production"><option value="production">Production</option><option value="integration">Integration</option></select></label>
-        <label>Managed-secret reference<input name="secretReference" required maxLength={255} autoComplete="off" placeholder="gcp-secret://projects/gmib/secrets/tenant-name/versions/latest" /><small>Approved opaque reference only; credential values are rejected.</small></label>
-        <label className="span-two">Optional initial location<select name="locationId" defaultValue=""><option value="">No initial assignment</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
+        <label>Initial location<select name="locationId" defaultValue=""><option value="">No initial assignment</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
+        <label>Client ID<input name="clientId" required maxLength={4096} autoComplete="off" spellCheck={false} /></label>
+        <label>Client secret<input name="clientSecret" type="password" required maxLength={4096} autoComplete="new-password" spellCheck={false} /></label>
+        <label className="span-two">ST App Key<input name="appKey" type="password" required maxLength={4096} autoComplete="new-password" spellCheck={false} /><small>Use the actual ST App Key from ServiceTitan, not the App ID.</small></label>
         <div className="production-form-footer">
-          <span>New metadata starts in needs attention until a trusted worker validates it.</span>
-          <SubmitButton>Add connection metadata</SubmitButton>
+          <span>The connection starts in needs attention until the trusted worker validates OAuth and a read-only tenant request.</span>
+          <SubmitButton>Encrypt and add connection</SubmitButton>
         </div>
       </form>
       <ActionNotice state={state} />
@@ -176,6 +200,26 @@ function activeAssignmentNames(
     .map((assignment) => names.get(assignment.location_id) ?? "Unknown tenant location");
 }
 
+function ConnectionCredentialRotationForm({ connectionId }: { connectionId: string }) {
+  const [state, action] = useActionState(rotateConnectionCredentialsAction, INITIAL_ADMIN_ACTION_STATE);
+  return (
+    <details>
+      <summary>Replace encrypted credentials</summary>
+      <form action={action} className="production-form-grid compact" autoComplete="off">
+        <input type="hidden" name="connectionId" value={connectionId} />
+        <label>Client ID<input name="clientId" required maxLength={4096} autoComplete="off" spellCheck={false} /></label>
+        <label>Client secret<input name="clientSecret" type="password" required maxLength={4096} autoComplete="new-password" spellCheck={false} /></label>
+        <label>Actual ST App Key<input name="appKey" type="password" required maxLength={4096} autoComplete="new-password" spellCheck={false} /></label>
+        <div className="production-form-footer">
+          <span>The previous Vault value is replaced atomically. Revalidate before ingestion.</span>
+          <SubmitButton>Encrypt replacement</SubmitButton>
+        </div>
+      </form>
+      <ActionNotice state={state} />
+    </details>
+  );
+}
+
 function ConnectionRecord({ connection, assignments, locations }: { connection: ServiceTitanConnection; assignments: ServiceTitanAssignment[]; locations: TenantLocation[] }) {
   const [state, action] = useActionState(disableConnectionAction, INITIAL_ADMIN_ACTION_STATE);
   const assignmentNames = activeAssignmentNames(connection, assignments, locations);
@@ -187,16 +231,19 @@ function ConnectionRecord({ connection, assignments, locations }: { connection: 
         <span className={`production-status ${connection.status}`}>{connection.status.replace("_", " ")}</span>
       </div>
       <dl className="production-facts">
-        <div><dt>Secret reference</dt><dd><code>{connection.secret_reference}</code></dd></div>
+        <div><dt>Credentials</dt><dd>Encrypted in managed vault</dd></div>
         <div><dt>Active assignments</dt><dd>{assignmentNames.length ? assignmentNames.join(", ") : "None"}</dd></div>
         <div><dt>Last validated</dt><dd>{connection.last_validated_at ? new Date(connection.last_validated_at).toLocaleString() : "Not validated"}</dd></div>
       </dl>
       {canDisable ? (
-        <form action={action} className="production-destructive-row">
-          <input type="hidden" name="connectionId" value={connection.id} />
-          <span>Disabling also revokes active location assignments.</span>
-          <SubmitButton danger>Disable connection</SubmitButton>
-        </form>
+        <>
+          <ConnectionCredentialRotationForm connectionId={connection.id} />
+          <form action={action} className="production-destructive-row">
+            <input type="hidden" name="connectionId" value={connection.id} />
+            <span>Disabling revokes active assignments and permanently destroys Vault credentials.</span>
+            <SubmitButton danger>Disable connection</SubmitButton>
+          </form>
+        </>
       ) : null}
       <ActionNotice state={state} />
     </article>
@@ -207,7 +254,7 @@ export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTen
   return (
     <main className="production-shell">
       <header className="production-topbar">
-        <Link href="/" className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></Link>
+        <Link href="/" className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></Link>
         <div>{tenant.hasPortfolioAccess ? <Link href="/portfolio" className="button secondary">Champions portfolio</Link> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/admin" /><span className="production-mode">{mode}</span><SignOutButton /></div>
       </header>
       <div className="production-page">

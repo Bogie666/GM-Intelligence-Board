@@ -361,7 +361,10 @@ a { color: inherit; text-decoration: none; }
 .production-shell { min-height:100vh; background:#f3f6f9; }
 .production-topbar { min-height:68px; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:11px clamp(18px,4vw,48px); border-bottom:1px solid var(--line); background:white; }
 .production-topbar>div,.production-topbar>a,.production-brand,.production-topbar>div:last-child { display:flex; align-items:center; gap:11px; }
-.production-brand>span,.production-state-mark { width:39px; height:39px; display:grid; place-items:center; border-radius:9px; color:#10253e; background:var(--brand-accent); font-family:'Manrope'; font-size:12px; font-weight:800; }
+.champions-group-logo { display:block; height:auto; object-fit:contain; }
+.champions-group-logo.header { width:112px; max-height:44px; }
+.champions-group-logo.login { width:190px; max-width:62%; }
+.production-state-mark { width:39px; height:39px; display:grid; place-items:center; border-radius:9px; color:#10253e; background:var(--brand-accent); font-family:'Manrope'; font-size:12px; font-weight:800; }
 .production-brand strong,.production-brand small { display:block; }.production-brand strong { color:#1f3045; font-size:12px; }.production-brand small { margin-top:2px; color:var(--muted); font-size:9px; }
 .production-mode { padding:4px 8px; border-radius:999px; color:#315d80; background:#eaf2f8; text-transform:uppercase; letter-spacing:.08em; font-size:8px; font-weight:800; }
 .tenant-switcher { display:flex; align-items:flex-end; gap:7px; }.tenant-switcher label { display:grid; gap:3px; color:#60768a; font-size:8px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }.tenant-switcher select { min-width:190px; max-width:280px; padding:7px 28px 7px 9px; border:1px solid var(--line); border-radius:7px; color:#1f3045; background:white; font-size:10px; text-transform:none; letter-spacing:0; }.tenant-switcher .button { min-height:31px; padding:7px 10px; }.production-state-card .tenant-switcher { margin:20px 0 12px; align-items:end; }.production-state-card .tenant-switcher label { flex:1; }.production-state-card .tenant-switcher select { width:100%; max-width:none; }

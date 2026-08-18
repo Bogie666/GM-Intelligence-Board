@@ -5,6 +5,7 @@ vi.mock("@/lib/auth", () => ({ getTenantAuthContext: vi.fn() }));
 
 import {
   getTenantReadiness,
+  validateConnectionCredentialInput,
   validateConnectionInput,
   validateLocationInput,
   validateOrganizationInput,
@@ -49,6 +50,7 @@ describe("tenant control-plane validation", () => {
     [{ locationKey: "a", brandName: "Brand", displayName: "Place", timezone: "UTC" }, "locationKey"],
     [{ locationKey: "valid-key", brandName: "", displayName: "Place", timezone: "UTC" }, "brandName"],
     [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Mars/Olympus" }, "timezone"],
+    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Europe/London" }, "timezone"],
     [{ locationKey: "valid-key", brandName: "Brand\u0000", displayName: "Place", timezone: "UTC" }, "brandName"],
   ])("rejects invalid location input %#", (input, field) => {
     const result = validateLocationInput(input);
@@ -75,6 +77,41 @@ describe("tenant control-plane validation", () => {
         locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d",
       },
     });
+  });
+
+  it("accepts ServiceTitan credentials for server-side Vault encryption", () => {
+    expect(
+      validateConnectionCredentialInput({
+        tenantId: "tenant_123-ABC",
+        displayName: " LEX DFW Production ",
+        environment: "production",
+        clientId: "client-id-value",
+        clientSecret: "client-secret-value",
+        appKey: "actual-st-app-key",
+        locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d",
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        tenantId: "tenant_123-ABC",
+        displayName: "LEX DFW Production",
+        environment: "production",
+        clientId: "client-id-value",
+        clientSecret: "client-secret-value",
+        appKey: "actual-st-app-key",
+        locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d",
+      },
+    });
+  });
+
+  it.each([
+    [{ tenantId: "tenant", displayName: "Primary", environment: "production", clientId: "", clientSecret: "secret", appKey: "key" }, "clientId"],
+    [{ tenantId: "tenant", displayName: "Primary", environment: "production", clientId: "id", clientSecret: " secret", appKey: "key" }, "clientSecret"],
+    [{ tenantId: "tenant", displayName: "Primary", environment: "production", clientId: "id", clientSecret: "secret", appKey: "key\n" }, "appKey"],
+  ])("rejects unsafe ServiceTitan credential input %#", (input, field) => {
+    const result = validateConnectionCredentialInput(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fieldErrors).toHaveProperty(field as string);
   });
 
   it.each([

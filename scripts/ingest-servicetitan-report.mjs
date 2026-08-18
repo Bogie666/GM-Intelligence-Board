@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GCP_REFERENCE = /^gcp-secret:\/\/(projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/secrets\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}\/versions\/(?:latest|[1-9][0-9]*))$/;
 const ENV_REFERENCE = /^env:\/\/([A-Z][A-Z0-9_]{1,127})$/;
+const VAULT_REFERENCE = /^supabase-vault:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 50;
 
@@ -68,7 +69,7 @@ function serviceRoleClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
 }
 
-async function resolveSecret(reference) {
+async function resolveSecret(reference, supabase, organizationId, connectionId) {
   const envMatch = reference.match(ENV_REFERENCE);
   if (envMatch) {
     const raw = process.env[envMatch[1]];
@@ -85,6 +86,17 @@ async function resolveSecret(reference) {
       throw new WorkerInputError("secret-reference-unresolved", "Google Secret Manager could not resolve the approved reference.");
     }
     return parseCredentialPayload(stdout);
+  }
+  if (VAULT_REFERENCE.test(reference)) {
+    const { data, error } = await supabase.rpc("resolve_service_titan_connection_secret", {
+      p_organization_id: organizationId,
+      p_connection_id: connectionId,
+      p_purpose: "ingestion",
+    });
+    if (error || typeof data !== "string" || !data) {
+      throw new WorkerInputError("secret-reference-unresolved", "Supabase Vault could not resolve the approved reference.");
+    }
+    return parseCredentialPayload(data);
   }
   throw new WorkerInputError("secret-reference-unsupported", "The connection uses a secret reference unsupported by this worker.");
 }
@@ -165,7 +177,7 @@ async function loadGovernedBinding(supabase, organizationId, bindingId) {
   const [definition, location, connection, , source] = await Promise.all([
     exactSingle(supabase.from("custom_kpi_definitions").select("id,lifecycle,type,value_kind").eq("organization_id", organizationId).eq("id", binding.kpi_definition_id), "definition-unavailable", "The KPI definition is unavailable."),
     exactSingle(supabase.from("locations").select("id,status").eq("organization_id", organizationId).eq("id", binding.location_id), "location-unavailable", "The exact location is unavailable."),
-    exactSingle(supabase.from("service_titan_connections").select("id,organization_id,service_titan_tenant_id,environment,status,secret_reference").eq("organization_id", organizationId).eq("id", binding.connection_id).eq("service_titan_tenant_id", binding.service_titan_tenant_id), "connection-unavailable", "The exact ServiceTitan connection is unavailable."),
+    exactSingle(supabase.from("service_titan_connections").select("id,organization_id,service_titan_tenant_id,environment,status,secret_reference,configuration_revision").eq("organization_id", organizationId).eq("id", binding.connection_id).eq("service_titan_tenant_id", binding.service_titan_tenant_id), "connection-unavailable", "The exact ServiceTitan connection is unavailable."),
     exactSingle(supabase.from("service_titan_connection_locations").select("connection_id,location_id,revoked_at").eq("organization_id", organizationId).eq("connection_id", binding.connection_id).eq("location_id", binding.location_id).is("revoked_at", null), "assignment-unavailable", "The exact active connection-to-location assignment is unavailable."),
     exactSingle(supabase.from("service_titan_report_sources").select("id,organization_id,connection_id,service_titan_tenant_id,category_id,report_id,fields,canonical_source_fingerprint,lifecycle,status").eq("organization_id", organizationId).eq("id", binding.report_source_id).eq("connection_id", binding.connection_id).eq("service_titan_tenant_id", binding.service_titan_tenant_id), "source-unavailable", "The exact saved-report source is unavailable."),
   ]);
@@ -184,9 +196,9 @@ async function loadGovernedBinding(supabase, organizationId, bindingId) {
   return { binding, definition, connection, source };
 }
 
-async function markConnectionAttention(supabase, connectionId, organizationId, code) {
-  if (!connectionId || !organizationId) return;
-  await supabase.from("service_titan_connections").update({ status: "needs_attention", last_error_code: code.slice(0, 120) }).eq("id", connectionId).eq("organization_id", organizationId).not("status", "in", "(disabled,archived)");
+async function markConnectionAttention(supabase, connectionId, organizationId, expectedCredentialRevision, code) {
+  if (!connectionId || !organizationId || !expectedCredentialRevision) return;
+  await supabase.from("service_titan_connections").update({ status: "needs_attention", last_error_code: code.slice(0, 120) }).eq("id", connectionId).eq("organization_id", organizationId).eq("configuration_revision", expectedCredentialRevision).not("status", "in", "(disabled,archived)");
 }
 
 async function main() {
@@ -205,15 +217,22 @@ async function main() {
 
   const supabase = serviceRoleClient();
   let connectionId;
+  let credentialRevision;
   try {
     const governed = await loadGovernedBinding(supabase, organizationId, bindingId);
     connectionId = governed.connection.id;
+    credentialRevision = governed.connection.configuration_revision;
     const idempotencyKey = makeObservationIdempotencyKey({ organizationId, bindingId, sourceFingerprint: governed.binding.canonical_source_fingerprint, periodStart: period.start, periodEnd: period.end });
     const { data: existing, error: existingError } = await supabase.from("kpi_observations").select("id").eq("organization_id", organizationId).eq("binding_id", bindingId).eq("idempotency_key", idempotencyKey).maybeSingle();
     if (existingError) throw new WorkerInputError("observation-check-failed", "The observation idempotency check failed.");
     if (existing) { console.log("Observation already materialized; no ServiceTitan request was made."); return; }
 
-    const credentials = await resolveSecret(governed.connection.secret_reference);
+    const credentials = await resolveSecret(
+      governed.connection.secret_reference,
+      supabase,
+      organizationId,
+      governed.connection.id,
+    );
     const token = await obtainToken(credentials, governed.connection.environment);
     const parameters = buildReportParameters(governed.binding.parameter_values, period.start, period.end);
     const report = await fetchReport({ credentials, token, connection: governed.connection, source: governed.source, parameters });
@@ -243,13 +262,13 @@ async function main() {
       confidence: "high",
       unmapped_record_count: 0,
       idempotency_key: idempotencyKey,
-      metadata: { ingestionMethod: "saved-report", rowCount: report.rows.length, pageCount: report.pageCount, observedFieldNames: report.fields },
+      metadata: { ingestionMethod: "saved-report", rowCount: report.rows.length, pageCount: report.pageCount, observedFieldNames: report.fields, _credentialRevision: governed.connection.configuration_revision },
     });
     if (insertError && insertError.code !== "23505") throw new WorkerInputError("observation-write-failed", "The governed observation could not be written.");
     console.log(insertError?.code === "23505" ? "Observation was concurrently materialized; duplicate write suppressed." : "ServiceTitan report observation materialized successfully.");
   } catch (error) {
     const code = error instanceof WorkerInputError ? error.code : "worker-unexpected";
-    await markConnectionAttention(supabase, connectionId, organizationId, code).catch(() => {});
+    await markConnectionAttention(supabase, connectionId, organizationId, credentialRevision, code).catch(() => {});
     throw error;
   }
 }

@@ -8,6 +8,15 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SECRET_REFERENCE_PATTERN = /^(?:gcp-secret:\/\/projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/secrets\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/versions\/(?:latest|[1-9][0-9]*)|env:\/\/[A-Z][A-Z0-9_]{1,127})$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+const UNITED_STATES_TIMEZONES = new Set([
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Phoenix",
+  "America/Los_Angeles",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+]);
 
 export type ValidationResult<T> =
   | { ok: true; value: T }
@@ -31,6 +40,22 @@ export interface ConnectionInput {
   environment: "production" | "integration";
   secretReference: string;
   locationId: string | null;
+}
+
+export interface ConnectionCredentialInput {
+  tenantId: string;
+  displayName: string;
+  environment: "production" | "integration";
+  clientId: string;
+  clientSecret: string;
+  appKey: string;
+  locationId: string | null;
+}
+
+export interface CredentialRotationInput {
+  clientId: string;
+  clientSecret: string;
+  appKey: string;
 }
 
 export interface TenantOrganization {
@@ -168,12 +193,8 @@ export function validateLocationInput(input: Record<string, unknown>): Validatio
   validateName(brandName, "brandName", 120, fieldErrors);
   validateName(displayName, "displayName", 160, fieldErrors);
 
-  try {
-    if (!timezone || timezone.length > 100 || Intl.DateTimeFormat(undefined, { timeZone: timezone }).resolvedOptions().timeZone.length === 0) {
-      fieldErrors.timezone = "Enter a valid IANA timezone, such as America/Denver or UTC.";
-    }
-  } catch {
-    fieldErrors.timezone = "Enter a valid IANA timezone, such as America/Denver or UTC.";
+  if (!UNITED_STATES_TIMEZONES.has(timezone)) {
+    fieldErrors.timezone = "Choose a supported United States timezone.";
   }
 
   return Object.keys(fieldErrors).length > 0
@@ -215,6 +236,76 @@ export function validateConnectionInput(input: Record<string, unknown>): Validat
           locationId,
         },
       };
+}
+
+function credentialComponent(
+  value: unknown,
+  field: "clientId" | "clientSecret" | "appKey",
+  label: string,
+  errors: Record<string, string>,
+): string {
+  const candidate = typeof value === "string" ? value : "";
+  if (
+    candidate.length < 1 ||
+    candidate.length > 4096 ||
+    candidate !== candidate.trim() ||
+    CONTROL_CHARACTER_PATTERN.test(candidate)
+  ) {
+    errors[field] = `${label} must contain 1 to 4096 characters with no leading, trailing, or control characters.`;
+  }
+  return candidate;
+}
+
+export function validateConnectionCredentialInput(
+  input: Record<string, unknown>,
+): ValidationResult<ConnectionCredentialInput> {
+  const tenantId = text(input.tenantId);
+  const displayName = text(input.displayName);
+  const environment = text(input.environment);
+  const locationId = text(input.locationId) || null;
+  const fieldErrors: Record<string, string> = {};
+
+  if (!TENANT_ID_PATTERN.test(tenantId)) {
+    fieldErrors.tenantId = "ServiceTitan tenant ID must contain 1 to 128 letters, numbers, periods, underscores, or hyphens.";
+  }
+  validateName(displayName, "displayName", 160, fieldErrors);
+  if (environment !== "production" && environment !== "integration") {
+    fieldErrors.environment = "Choose production or integration.";
+  }
+  if (locationId && !validateUuid(locationId)) {
+    fieldErrors.locationId = "Choose a valid location.";
+  }
+
+  const clientId = credentialComponent(input.clientId, "clientId", "Client ID", fieldErrors);
+  const clientSecret = credentialComponent(input.clientSecret, "clientSecret", "Client secret", fieldErrors);
+  const appKey = credentialComponent(input.appKey, "appKey", "ST App Key", fieldErrors);
+
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors }
+    : {
+        ok: true,
+        value: {
+          tenantId,
+          displayName,
+          environment: environment as ConnectionCredentialInput["environment"],
+          clientId,
+          clientSecret,
+          appKey,
+          locationId,
+        },
+      };
+}
+
+export function validateCredentialRotationInput(
+  input: Record<string, unknown>,
+): ValidationResult<CredentialRotationInput> {
+  const fieldErrors: Record<string, string> = {};
+  const clientId = credentialComponent(input.clientId, "clientId", "Client ID", fieldErrors);
+  const clientSecret = credentialComponent(input.clientSecret, "clientSecret", "Client secret", fieldErrors);
+  const appKey = credentialComponent(input.appKey, "appKey", "ST App Key", fieldErrors);
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors }
+    : { ok: true, value: { clientId, clientSecret, appKey } };
 }
 
 export function getTenantReadiness(

@@ -5,7 +5,8 @@ import { revalidatePath } from "next/cache";
 import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
 import {
-  validateConnectionInput,
+  validateConnectionCredentialInput,
+  validateCredentialRotationInput,
   validateLocationInput,
   validateOrganizationInput,
   validateUuid,
@@ -202,15 +203,17 @@ export async function createConnectionAction(
   const writable = await getWritableTenant();
   if (writable.ok === false) return writable.state;
 
-  const validation = validateConnectionInput({
+  const validation = validateConnectionCredentialInput({
     tenantId: input(formData, "tenantId"),
     displayName: input(formData, "displayName"),
     environment: input(formData, "environment"),
-    secretReference: input(formData, "secretReference"),
+    clientId: input(formData, "clientId"),
+    clientSecret: input(formData, "clientSecret"),
+    appKey: input(formData, "appKey"),
     locationId: input(formData, "locationId"),
   });
   if (!validation.ok) {
-    return { status: "error", message: "Correct the connection metadata and try again.", fieldErrors: validation.fieldErrors };
+    return { status: "error", message: "Correct the connection and credential fields and try again.", fieldErrors: validation.fieldErrors };
   }
 
   if (validation.value.locationId) {
@@ -227,13 +230,15 @@ export async function createConnectionAction(
   }
 
   const { data: connectionId, error } = await writable.supabase.supabase.rpc(
-    "register_service_titan_connection",
+    "register_service_titan_connection_with_credentials",
     {
       p_organization_id: writable.organizationId,
       p_service_titan_tenant_id: validation.value.tenantId,
       p_display_name: validation.value.displayName,
       p_environment: validation.value.environment,
-      p_secret_reference: validation.value.secretReference,
+      p_client_id: validation.value.clientId,
+      p_client_secret: validation.value.clientSecret,
+      p_app_key: validation.value.appKey,
       p_location_id: validation.value.locationId,
     },
   );
@@ -246,9 +251,40 @@ export async function createConnectionAction(
   return {
     status: "success",
     message: validation.value.locationId
-      ? "Credential-free connection metadata and location assignment saved atomically. Validation by the integration worker is still required."
-      : "Credential-free connection metadata saved. Validation by the integration worker is still required.",
+      ? "Credentials encrypted in the managed vault; connection metadata and location assignment saved atomically. Trusted validation is still required."
+      : "Credentials encrypted in the managed vault and connection metadata saved. Trusted validation is still required.",
   };
+}
+
+export async function rotateConnectionCredentialsAction(
+  _previous: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await getWritableTenant();
+  if (writable.ok === false) return writable.state;
+  const connectionId = input(formData, "connectionId").trim();
+  if (!validateUuid(connectionId)) {
+    return { status: "error", message: "The connection identifier is invalid.", fieldErrors: { connectionId: "Invalid identifier." } };
+  }
+  const validation = validateCredentialRotationInput({
+    clientId: input(formData, "clientId"),
+    clientSecret: input(formData, "clientSecret"),
+    appKey: input(formData, "appKey"),
+  });
+  if (!validation.ok) {
+    return { status: "error", message: "Correct the highlighted ServiceTitan credentials.", fieldErrors: validation.fieldErrors };
+  }
+
+  const { error } = await writable.supabase.supabase.rpc("rotate_service_titan_connection_credentials", {
+    p_organization_id: writable.organizationId,
+    p_connection_id: connectionId,
+    p_client_id: validation.value.clientId,
+    p_client_secret: validation.value.clientSecret,
+    p_app_key: validation.value.appKey,
+  });
+  if (error) return databaseError("Credential rotation", error);
+  refreshTenantPages();
+  return { status: "success", message: "Credentials encrypted and replaced. Revalidate the connection before ingestion." };
 }
 
 export async function disableConnectionAction(

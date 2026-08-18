@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/login-form";
+import { ChampionsGroupLogo } from "@/components/champions-group-logo";
 import { getSafeRedirectPath } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
 
@@ -22,9 +23,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   return (
     <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
       <section style={{ width: "min(420px, 100%)", border: "1px solid #e4e9ef", borderRadius: 12, background: "white", padding: 32, boxShadow: "0 12px 36px rgba(15, 23, 42, .08)" }}>
-        <div style={{ width: 44, height: 44, display: "grid", placeItems: "center", borderRadius: 10, background: "#f4b41a", color: "#10253e", fontWeight: 800 }}>
-          CG
-        </div>
+        <ChampionsGroupLogo placement="login" priority />
         <h1 style={{ margin: "20px 0 8px", color: "#132238", fontSize: 26 }}>GM Intelligence Board</h1>
         <p style={{ margin: "0 0 24px", color: "#64748b", fontSize: 13, lineHeight: 1.5 }}>
           Sign in with the account provided by your administrator. Public registration is not available.
