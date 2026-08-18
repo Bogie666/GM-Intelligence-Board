@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Dashboard } from "@/components/dashboard";
-import { ChampionsGroupLogo } from "@/components/champions-group-logo";
+import { ProductionNavigation } from "@/components/production-navigation";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import { isAdminRole } from "@/lib/auth";
@@ -52,10 +52,15 @@ export default async function Home() {
   const readiness = tenant.readiness;
   return (
     <main className="production-shell">
-      <header className="production-topbar">
-        <div className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></div>
-        <div>{tenant.hasPortfolioAccess ? <a className="button secondary" href="/portfolio">Champions portfolio</a> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/" /><span className="production-mode">{config.mode}</span><SignOutButton /></div>
-      </header>
+      <ProductionNavigation
+        contextLabel={tenant.organization.name}
+        mode={config.mode}
+        hasDashboardAccess
+        hasPortfolioAccess={tenant.hasPortfolioAccess}
+        canAdminister={isAdminRole(tenant.role)}
+        tenants={tenant.availableTenants}
+        selectedOrganizationId={tenant.organization.id}
+      />
       <div className="production-home">
         <section className="production-hero">
           <p className="production-kicker">Authenticated brand readiness</p>

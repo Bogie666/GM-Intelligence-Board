@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import {
@@ -19,9 +19,7 @@ import type {
   ServiceTitanConnection,
   TenantLocation,
 } from "@/lib/tenant-context";
-import { ChampionsGroupLogo } from "@/components/champions-group-logo";
-import { SignOutButton } from "@/components/sign-out-button";
-import { TenantSwitcher } from "@/components/tenant-switcher";
+import { ProductionNavigation } from "@/components/production-navigation";
 
 const INITIAL_ADMIN_ACTION_STATE: AdminActionState = { status: "idle", message: "" };
 
@@ -34,6 +32,31 @@ const UNITED_STATES_TIMEZONES = [
   { value: "America/Anchorage", label: "Alaska Time" },
   { value: "Pacific/Honolulu", label: "Hawaii Time" },
 ] as const;
+
+type ProductionAdminSection = "overview" | "organization" | "connections" | "kpis" | "sources" | "targets" | "layouts";
+
+const PRODUCTION_ADMIN_SECTIONS: Array<{ id: ProductionAdminSection; label: string; eyebrow: string }> = [
+  { id: "overview", label: "Overview", eyebrow: "Start here" },
+  { id: "organization", label: "Brand & Locations", eyebrow: "Tenant structure" },
+  { id: "connections", label: "ServiceTitan", eyebrow: "Credentials & validation" },
+  { id: "kpis", label: "KPI Library", eyebrow: "Definitions & bindings" },
+  { id: "sources", label: "Data Sources", eyebrow: "Reports & evidence" },
+  { id: "targets", label: "Targets & Budgets", eyebrow: "Performance plans" },
+  { id: "layouts", label: "Layouts & Access", eyebrow: "Roles & presentation" },
+];
+
+function DeferredAdminSection({ title, description, supported, nextStep }: { title: string; description: string; supported: string[]; nextStep: string }) {
+  return (
+    <section className="production-section production-deferred-section">
+      <div className="production-section-title"><div><span>Production restoration</span><h2>{title}</h2></div><strong aria-label="Not yet available">—</strong></div>
+      <p className="production-deferred-description">{description}</p>
+      <div className="production-deferred-grid">
+        <div><span>Governed backend already available</span><ul>{supported.map((item) => <li key={item}>{item}</li>)}</ul></div>
+        <div><span>Next production milestone</span><p>{nextStep}</p><button className="button secondary" type="button" disabled>Editor being restored</button></div>
+      </div>
+    </section>
+  );
+}
 
 function TimezoneSelect({ defaultValue = "America/Chicago" }: { defaultValue?: string }) {
   return (
@@ -251,41 +274,109 @@ function ConnectionRecord({ connection, assignments, locations }: { connection: 
 }
 
 export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTenantContext; mode: "staging" | "production" }) {
+  const [section, setSection] = useState<ProductionAdminSection>("overview");
+  const selectedSection = PRODUCTION_ADMIN_SECTIONS.find((item) => item.id === section) ?? PRODUCTION_ADMIN_SECTIONS[0];
+  const readyConnections = tenant.connections.filter((connection) => connection.status === "ready" && Boolean(connection.last_validated_at)).length;
+  const completedSetupSteps = Number(tenant.readiness.activeLocationCount > 0) + Number(readyConnections > 0);
+
   return (
     <main className="production-shell">
-      <header className="production-topbar">
-        <Link href="/" className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></Link>
-        <div>{tenant.hasPortfolioAccess ? <Link href="/portfolio" className="button secondary">Champions portfolio</Link> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/admin" /><span className="production-mode">{mode}</span><SignOutButton /></div>
-      </header>
-      <div className="production-page">
+      <ProductionNavigation
+        contextLabel={tenant.organization.name}
+        mode={mode}
+        hasDashboardAccess
+        hasPortfolioAccess={tenant.hasPortfolioAccess}
+        canAdminister
+        tenants={tenant.availableTenants}
+        selectedOrganizationId={tenant.organization.id}
+        nextPath="/admin"
+      />
+      <div className="production-page production-admin-page">
         <div className="production-title-row">
-          <div><span>Authenticated brand control plane</span><h1>Production administration</h1><p>Manage persisted brand and location configuration for <strong>{tenant.organization.name}</strong>. Your role is <strong>{tenant.role}</strong>.</p></div>
-          <Link href="/" className="button secondary">Back to brand dashboard</Link>
+          <div><span>Authenticated brand control plane</span><h1>Admin Center</h1><p>Configure the governed production workspace for <strong>{tenant.organization.name}</strong>. Your role is <strong>{tenant.role}</strong>.</p></div>
+          <Link href="/" className="button secondary">Back to dashboard</Link>
         </div>
 
-        <section className="production-readiness-grid" aria-label="Brand readiness">
-          <div><span>Active locations</span><strong>{tenant.readiness.activeLocationCount}</strong></div>
-          <div><span>Enabled connections</span><strong>{tenant.readiness.enabledConnectionCount}</strong></div>
-          <div><span>Assigned locations</span><strong>{tenant.readiness.assignedActiveLocationCount}</strong></div>
-          <div><span>Worker validation</span><strong className="readiness-word">{tenant.readiness.hasValidatedConnection ? "Validated" : "Pending"}</strong></div>
-        </section>
+        <div className="production-admin-workspace">
+          <nav className="production-admin-section-nav" aria-label="Admin Center sections">
+            {PRODUCTION_ADMIN_SECTIONS.map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                className={section === item.id ? "active" : ""}
+                aria-current={section === item.id ? "page" : undefined}
+                onClick={() => setSection(item.id)}
+              >
+                <span>{item.eyebrow}</span>
+                <strong>{item.label}</strong>
+              </button>
+            ))}
+          </nav>
 
-        <OrganizationEditor tenant={tenant} />
-        <div className="production-two-column"><CreateLocationForm /><CreateConnectionForm locations={tenant.locations} /></div>
+          <div className="production-admin-section-content">
+            <header className="production-admin-section-heading">
+              <span>{selectedSection.eyebrow}</span>
+              <h2>{selectedSection.label}</h2>
+            </header>
 
-        <section className="production-section">
-          <div className="production-section-title"><div><span>Database records</span><h2>Locations</h2></div><strong>{tenant.locations.length}</strong></div>
-          <div className="production-record-list">
-            {tenant.locations.length ? tenant.locations.map((location) => <LocationEditor key={location.id} location={location} />) : <div className="production-empty">No locations have been persisted for this tenant.</div>}
+            {section === "overview" ? (
+              <>
+                <section className="production-readiness-grid" aria-label="Brand readiness">
+                  <div><span>Active locations</span><strong>{tenant.readiness.activeLocationCount}</strong></div>
+                  <div><span>Enabled connections</span><strong>{tenant.readiness.enabledConnectionCount}</strong></div>
+                  <div><span>Assigned locations</span><strong>{tenant.readiness.assignedActiveLocationCount}</strong></div>
+                  <div><span>Worker validation</span><strong className="readiness-word">{tenant.readiness.hasValidatedConnection ? "Validated" : "Pending"}</strong></div>
+                </section>
+                <section className="production-section production-setup-path">
+                  <div className="production-section-title"><div><span>Guided setup</span><h2>Production onboarding path</h2></div><strong>{completedSetupSteps}/4</strong></div>
+                  <p>Move through these steps in order. Completed infrastructure remains visible, and unfinished product areas are never hidden.</p>
+                  <div>
+                    <button type="button" onClick={() => setSection("organization")}><span className={tenant.readiness.activeLocationCount > 0 ? "complete" : "needed"}>1</span><div><strong>Brand and locations</strong><small>{tenant.readiness.activeLocationCount > 0 ? `${tenant.readiness.activeLocationCount} active location configured` : "Add the first operating location"}</small></div><b>{tenant.readiness.activeLocationCount > 0 ? "Complete" : "Required"}</b></button>
+                    <button type="button" onClick={() => setSection("connections")}><span className={readyConnections > 0 ? "complete" : "needed"}>2</span><div><strong>ServiceTitan connection</strong><small>{readyConnections > 0 ? `${readyConnections} validated connection ready` : "Register and validate credentials"}</small></div><b>{readyConnections > 0 ? "Complete" : "Required"}</b></button>
+                    <button type="button" onClick={() => setSection("sources")}><span className="needed">3</span><div><strong>Data source and evidence</strong><small>Register a saved report or approved endpoint recipe</small></div><b>Next</b></button>
+                    <button type="button" onClick={() => setSection("kpis")}><span className="needed">4</span><div><strong>KPI, target, and layout</strong><small>Publish the first reconciled metric and place it on the dashboard</small></div><b>Pending</b></button>
+                  </div>
+                </section>
+              </>
+            ) : null}
+
+            {section === "organization" ? (
+              <>
+                <OrganizationEditor tenant={tenant} />
+                <section className="production-section">
+                  <div className="production-section-title"><div><span>Tenant structure</span><h2>Add location</h2></div><strong>+</strong></div>
+                  <CreateLocationForm />
+                </section>
+                <section className="production-section">
+                  <div className="production-section-title"><div><span>Database records</span><h2>Locations</h2></div><strong>{tenant.locations.length}</strong></div>
+                  <div className="production-record-list">
+                    {tenant.locations.length ? tenant.locations.map((location) => <LocationEditor key={location.id} location={location} />) : <div className="production-empty">No locations have been persisted for this tenant.</div>}
+                  </div>
+                </section>
+              </>
+            ) : null}
+
+            {section === "connections" ? (
+              <>
+                <section className="production-section">
+                  <div className="production-section-title"><div><span>Vault-backed registration</span><h2>Add ServiceTitan connection</h2></div><strong>+</strong></div>
+                  <CreateConnectionForm locations={tenant.locations} />
+                </section>
+                <section className="production-section">
+                  <div className="production-section-title"><div><span>Database records</span><h2>ServiceTitan connections</h2></div><strong>{tenant.connections.length}</strong></div>
+                  <div className="production-record-list">
+                    {tenant.connections.length ? tenant.connections.map((connection) => <ConnectionRecord key={connection.id} connection={connection} assignments={tenant.assignments} locations={tenant.locations} />) : <div className="production-empty">No ServiceTitan connection metadata has been persisted for this tenant.</div>}
+                  </div>
+                </section>
+              </>
+            ) : null}
+
+            {section === "kpis" ? <DeferredAdminSection title="KPI Library" description="The original KPI wizard was browser-local and could not safely publish tenant configuration. The production database already governs definitions, versions, location bindings, observations, and approval state; the production editor is the remaining layer." supported={["Versioned custom KPI definitions", "Tenant- and location-bound KPI mappings", `${tenant.kpis.length} currently materialized production KPI binding${tenant.kpis.length === 1 ? "" : "s"}`, "Append-only observations with confidence and freshness"]} nextStep="Add audited draft, validate, publish, and archive actions; then bind the first LEX metric to its reconciled ServiceTitan source." /> : null}
+            {section === "sources" ? <DeferredAdminSection title="Data Sources" description={readyConnections > 0 ? "ServiceTitan credentials are live and validated. The saved-report/source catalog from the original interface still needs production server actions before an administrator can safely create or publish a source here." : "No ServiceTitan connection has completed trusted worker validation yet. Validate a connection first; then restore the saved-report/source catalog through production server actions."} supported={[`${readyConnections} validated ServiceTitan connection${readyConnections === 1 ? "" : "s"}`, "Saved-report source registry and parameter contracts", "Sample, reconciliation, and publication evidence", "Revision-aware ingestion worker"]} nextStep="Expose the governed source registry, run a read-only report discovery, capture reconciliation evidence, and publish the first source binding." /> : null}
+            {section === "targets" ? <DeferredAdminSection title="Targets & Budgets" description="The old target and budget screens saved configuration in the browser. Production has governed effective-dated KPI targets, but the monthly budget workflow still needs a first-class versioned model." supported={["Effective-dated KPI targets", "Location and organization scope", "Approval and audit foundations", "Target-aware production read model foundation"]} nextStep="Restore target administration first, then add a versioned monthly budget model with overlap protection and approval history." /> : null}
+            {section === "layouts" ? <DeferredAdminSection title="Layouts & Access" description="The original role layouts and personal dashboard arrangements were local browser preferences. Production has layout tables and organization roles, but needs constrained self-service actions before those controls can return." supported={["Versioned layout templates", "Profile layout overrides", "Owner and administrator authorization", "Portfolio and tenant membership boundaries"]} nextStep="Add audited role-template actions, a user-owned profile-layout policy, and cross-device persistence before enabling drag, hide, and restore controls." /> : null}
           </div>
-        </section>
-
-        <section className="production-section">
-          <div className="production-section-title"><div><span>Database records</span><h2>ServiceTitan connections</h2></div><strong>{tenant.connections.length}</strong></div>
-          <div className="production-record-list">
-            {tenant.connections.length ? tenant.connections.map((connection) => <ConnectionRecord key={connection.id} connection={connection} assignments={tenant.assignments} locations={tenant.locations} />) : <div className="production-empty">No ServiceTitan connection metadata has been persisted for this tenant.</div>}
-          </div>
-        </section>
+        </div>
       </div>
     </main>
   );

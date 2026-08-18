@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { openPortfolioBrandAction } from "@/app/portfolio/actions";
-import { ChampionsGroupLogo } from "@/components/champions-group-logo";
+import { ProductionNavigation } from "@/components/production-navigation";
 import { SignOutButton } from "@/components/sign-out-button";
 import { getAppConfig } from "@/lib/env";
+import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
 import { getPortfolioOverview, type PortfolioBrandSummary } from "@/lib/portfolio-context";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ const STAGE_NOTES: Record<PortfolioBrandSummary["stage"], string> = {
 };
 
 export default async function PortfolioPage() {
-  const result = await getPortfolioOverview();
+  const [result, tenantAuth] = await Promise.all([getPortfolioOverview(), getTenantAuthContext()]);
   if (result.ok === false && result.reason === "unauthenticated") redirect("/login?next=%2Fportfolio");
   if (result.ok === false) {
     return (
@@ -44,12 +45,18 @@ export default async function PortfolioPage() {
 
   const { portfolio } = result;
   const mode = getAppConfig().mode;
+  const availableTenants = tenantAuth.ok ? tenantAuth.availableTenants : tenantAuth.availableTenants ?? [];
+  const hasDashboardAccess = availableTenants.length > 0;
+  const canAdminister = tenantAuth.ok && isAdminRole(tenantAuth.membership.role);
   return (
     <main className="production-shell">
-      <header className="production-topbar">
-        <Link href="/portfolio" className="production-brand"><ChampionsGroupLogo priority /><div><strong>GM Intelligence Board</strong><small>{portfolio.name}</small></div></Link>
-        <div><span className="production-mode">{mode}</span><SignOutButton /></div>
-      </header>
+      <ProductionNavigation
+        contextLabel={portfolio.name}
+        mode={mode}
+        hasDashboardAccess={hasDashboardAccess}
+        hasPortfolioAccess
+        canAdminister={canAdminister}
+      />
       <div className="production-page portfolio-page">
         <div className="production-title-row">
           <div><span>Portfolio executive control plane</span><h1>{portfolio.name}</h1><p>Consolidated onboarding, connection, and KPI coverage across verified portfolio brands. Your role is <strong>{portfolio.role}</strong>.</p></div>
