@@ -94,10 +94,10 @@ export async function updateOrganizationAction(
     .select("id")
     .maybeSingle();
 
-  if (error) return databaseError("Organization", error);
-  if (!data) return { status: "error", message: "Organization was not updated because the tenant row was not writable." };
+  if (error) return databaseError("Brand", error);
+  if (!data) return { status: "error", message: "Brand was not updated because the authorized brand row was not writable." };
   refreshTenantPages();
-  return { status: "success", message: "Organization details saved." };
+  return { status: "success", message: "Brand details saved." };
 }
 
 export async function createLocationAction(

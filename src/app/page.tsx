@@ -26,8 +26,8 @@ export default async function Home() {
           <section className="production-state-card">
             <span className="production-state-mark">CG</span>
             <p className="production-kicker">Platform access</p>
-            <h1>Select a tenant</h1>
-            <p>Choose the organization you want to view. Every selection is revalidated against your active database memberships.</p>
+            <h1>Select a brand</h1>
+            <p>Choose the portfolio brand you want to view. Every selection is revalidated against your active database memberships.</p>
             <TenantSwitcher tenants={result.availableTenants} nextPath="/" />
             <SignOutButton />
           </section>
@@ -39,7 +39,7 @@ export default async function Home() {
         <section className="production-state-card" role="alert">
           <span className="production-state-mark">CG</span>
           <p className="production-kicker">Authenticated access blocked</p>
-          <h1>Tenant readiness is unavailable</h1>
+          <h1>Brand readiness is unavailable</h1>
           <p>{result.message}</p>
           <SignOutButton />
         </section>
@@ -53,23 +53,23 @@ export default async function Home() {
     <main className="production-shell">
       <header className="production-topbar">
         <div className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></div>
-        <div><TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/" /><span className="production-mode">{config.mode}</span><SignOutButton /></div>
+        <div>{tenant.hasPortfolioAccess ? <a className="button secondary" href="/portfolio">Champions portfolio</a> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/" /><span className="production-mode">{config.mode}</span><SignOutButton /></div>
       </header>
       <div className="production-home">
         <section className="production-hero">
-          <p className="production-kicker">Authenticated tenant readiness</p>
+          <p className="production-kicker">Authenticated brand readiness</p>
           <h1>{tenant.organization.name}</h1>
           <p>
-            This page reports only configuration persisted for tenant <code>{tenant.organization.slug}</code>.
+            This page reports only configuration persisted for brand <code>{tenant.organization.slug}</code>.
             No demo metrics or fabricated KPI values are shown in {config.mode} mode.
           </p>
           <div className="production-hero-actions">
-            {isAdminRole(tenant.role) ? <a className="button primary" href="/admin">Open tenant administration</a> : null}
+            {isAdminRole(tenant.role) ? <a className="button primary" href="/admin">Open brand administration</a> : null}
             <span>Signed in as {tenant.user.email ?? tenant.user.id} · {tenant.role}</span>
           </div>
         </section>
 
-        <section className="production-readiness-grid" aria-label="Persisted tenant readiness">
+        <section className="production-readiness-grid" aria-label="Persisted brand readiness">
           <div><span>Active locations</span><strong>{readiness.activeLocationCount}</strong><small>Persisted active location rows</small></div>
           <div><span>Enabled connections</span><strong>{readiness.enabledConnectionCount}</strong><small>Not disabled or archived</small></div>
           <div><span>Assigned locations</span><strong>{readiness.assignedActiveLocationCount}</strong><small>Active assignments to enabled connections</small></div>
@@ -106,11 +106,11 @@ export default async function Home() {
         <section className={`production-readiness-summary ${readiness.isConfigured ? "configured" : "incomplete"}`}>
           <div>
             <p className="production-kicker">Control-plane status</p>
-            <h2>{readiness.isConfigured ? "Tenant configuration is connected" : "Tenant configuration is incomplete"}</h2>
+            <h2>{readiness.isConfigured ? "Brand configuration is connected" : "Brand configuration is incomplete"}</h2>
             <p>
               {readiness.isConfigured
                 ? "At least one active location has an active assignment to enabled ServiceTitan connection metadata. Data availability still depends on trusted worker validation and ingestion."
-                : "Add an active location, enabled ServiceTitan connection metadata, and an active location assignment before the tenant is considered configured."}
+                : "Add an active location, enabled ServiceTitan connection metadata, and an active location assignment before the brand is considered configured."}
             </p>
           </div>
           <span className={`production-status ${readiness.isConfigured ? "ready" : "needs_attention"}`}>
@@ -121,7 +121,7 @@ export default async function Home() {
         <section className="production-panel">
           <div className="production-panel-heading"><div><span>Persisted records</span><h2>Configuration inventory</h2></div></div>
           <div className="production-inventory-list">
-            <div><strong>Organization</strong><span>{tenant.organization.name}</span><small>{tenant.organization.status}</small></div>
+            <div><strong>Brand</strong><span>{tenant.organization.name}</span><small>{tenant.organization.status}</small></div>
             <div><strong>Locations</strong><span>{tenant.locations.length} total record{tenant.locations.length === 1 ? "" : "s"}</span><small>{readiness.activeLocationCount} active</small></div>
             <div><strong>ServiceTitan</strong><span>{tenant.connections.length} metadata record{tenant.connections.length === 1 ? "" : "s"}</span><small>{readiness.enabledConnectionCount} enabled</small></div>
           </div>

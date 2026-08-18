@@ -102,6 +102,7 @@ export interface ProductionTenantContext {
   user: { id: string; email: string | null };
   role: OrganizationRole;
   availableTenants: TenantAccessOption[];
+  hasPortfolioAccess: boolean;
   organization: TenantOrganization;
   locations: TenantLocation[];
   connections: ServiceTitanConnection[];
@@ -355,7 +356,7 @@ export async function getProductionTenantContext(): Promise<ProductionTenantCont
     .select("id, organization_id, service_titan_tenant_id, display_name, environment, capabilities, status, last_validated_at")
     .eq("organization_id", organizationId)
     .order("display_name");
-  const [organizationResult, locationsResult, connectionsResult, assignmentsResult] = await Promise.all([
+  const [organizationResult, locationsResult, connectionsResult, assignmentsResult, portfolioAccessResult] = await Promise.all([
     auth.supabase
       .from("organizations")
       .select("id, slug, name, status, settings")
@@ -372,6 +373,7 @@ export async function getProductionTenantContext(): Promise<ProductionTenantCont
       .select("id, organization_id, connection_id, location_id, assigned_at, revoked_at")
       .eq("organization_id", organizationId)
       .order("assigned_at", { ascending: false }),
+    auth.supabase.rpc("has_portfolio_access"),
   ]);
 
   if (
@@ -382,7 +384,9 @@ export async function getProductionTenantContext(): Promise<ProductionTenantCont
     connectionsResult.error ||
     !connectionsResult.data ||
     assignmentsResult.error ||
-    !assignmentsResult.data
+    !assignmentsResult.data ||
+    portfolioAccessResult.error ||
+    typeof portfolioAccessResult.data !== "boolean"
   ) {
     return { ok: false, reason: "tenant-query-failed", message: AUTH_MESSAGES["tenant-query-failed"] };
   }
@@ -407,6 +411,7 @@ export async function getProductionTenantContext(): Promise<ProductionTenantCont
       user: { id: auth.user.id, email: auth.user.email ?? null },
       role: auth.membership.role,
       availableTenants: auth.availableTenants,
+      hasPortfolioAccess: portfolioAccessResult.data,
       organization,
       locations,
       connections,

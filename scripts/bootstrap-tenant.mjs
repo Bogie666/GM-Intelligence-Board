@@ -7,6 +7,7 @@ const HELP = `Usage:
   NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \\
   SUPABASE_SERVICE_ROLE_KEY='...' \\
   GM_PLATFORM_OWNER_PROFILE_ID='optional-profile-uuid' \\
+  GM_DEFAULT_PORTFOLIO_ID='optional-portfolio-uuid' \\
   node scripts/bootstrap-tenant.mjs \\
     --email owner@example.com \\
     --display-name 'Pilot Owner' \\
@@ -155,10 +156,20 @@ async function main() {
   let input;
   let supabaseUrl;
   let serviceRoleKey;
+  let platformOwnerProfileId;
+  let defaultPortfolioId;
   try {
     input = validateInputs(args);
     supabaseUrl = validateUrl(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
     serviceRoleKey = validateServiceRoleKey(process.env.SUPABASE_SERVICE_ROLE_KEY);
+    platformOwnerProfileId = process.env.GM_PLATFORM_OWNER_PROFILE_ID?.trim();
+    defaultPortfolioId = process.env.GM_DEFAULT_PORTFOLIO_ID?.trim();
+    if (!platformOwnerProfileId || !UUID_PATTERN.test(platformOwnerProfileId)) {
+      throw new Error("GM_PLATFORM_OWNER_PROFILE_ID is required and must be a UUID");
+    }
+    if (!defaultPortfolioId || !UUID_PATTERN.test(defaultPortfolioId)) {
+      throw new Error("GM_DEFAULT_PORTFOLIO_ID is required and must be a UUID");
+    }
   } catch (error) {
     fail(error.message);
     return;
@@ -211,19 +222,22 @@ async function main() {
 
     const result = data[0];
     authUserCreated = false;
-    const platformOwnerProfileId = process.env.GM_PLATFORM_OWNER_PROFILE_ID?.trim();
-    if (platformOwnerProfileId) {
-      if (!UUID_PATTERN.test(platformOwnerProfileId)) {
-        throw new Error("GM_PLATFORM_OWNER_PROFILE_ID is malformed; tenant bootstrap succeeded but operator-wide access was not refreshed");
-      }
-      const { data: tenantCount, error: platformGrantError } = await client.rpc("grant_owner_access_to_all_tenants", {
-        p_profile_id: platformOwnerProfileId,
-      });
-      if (platformGrantError) {
-        throw new Error(`tenant bootstrap succeeded but operator-wide access refresh failed${formatErrorCode(platformGrantError)}`);
-      }
-      console.log(`Platform owner access verified across ${tenantCount} active tenant(s).`);
+    const { data: tenantCount, error: portfolioOnboardingError } = await client.rpc(
+      "finalize_brand_portfolio_onboarding",
+      {
+        p_portfolio_id: defaultPortfolioId,
+        p_organization_id: result.organization_id,
+        p_platform_owner_profile_id: platformOwnerProfileId,
+        p_reason: `Tenant bootstrap attached brand ${input.organizationSlug}`,
+      },
+    );
+    if (portfolioOnboardingError) {
+      throw new Error(
+        `tenant bootstrap succeeded but atomic portfolio onboarding failed${formatErrorCode(portfolioOnboardingError)}`,
+      );
     }
+    console.log(`Platform owner access verified across ${tenantCount} active tenant(s).`);
+    console.log(`Portfolio attachment verified for ${input.organizationSlug}.`);
     console.log(result.created ? "Tenant bootstrap created." : "Tenant bootstrap already complete.");
     console.log(`Profile ID: ${result.profile_id}`);
     console.log(`Organization ID: ${result.organization_id}`);

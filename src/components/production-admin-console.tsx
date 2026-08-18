@@ -54,23 +54,23 @@ function OrganizationEditor({ tenant }: { tenant: ProductionTenantContext }) {
     <section className="production-panel">
       <div className="production-panel-heading">
         <div>
-          <span>Tenant identity</span>
-          <h2>Organization</h2>
+          <span>Portfolio brand identity</span>
+          <h2>Brand</h2>
         </div>
         <span className={`production-status ${tenant.organization.status}`}>{tenant.organization.status}</span>
       </div>
       <form action={action} className="production-form-grid">
         <label>
-          Organization name
+          Brand name
           <input name="name" required maxLength={160} defaultValue={tenant.organization.name} />
         </label>
         <label>
-          Organization slug
+          Brand slug
           <input name="slug" required minLength={3} maxLength={64} pattern="[a-z0-9][a-z0-9-]{1,62}[a-z0-9]" defaultValue={tenant.organization.slug} />
         </label>
         <div className="production-form-footer">
-          <span>Changes are written through your authenticated tenant session and RLS.</span>
-          <SubmitButton>Save organization</SubmitButton>
+          <span>Changes are written through your authenticated brand session and RLS.</span>
+          <SubmitButton>Save brand</SubmitButton>
         </div>
       </form>
       <ActionNotice state={state} />
@@ -208,15 +208,15 @@ export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTen
     <main className="production-shell">
       <header className="production-topbar">
         <Link href="/" className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></Link>
-        <div><TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/admin" /><span className="production-mode">{mode}</span><SignOutButton /></div>
+        <div>{tenant.hasPortfolioAccess ? <Link href="/portfolio" className="button secondary">Champions portfolio</Link> : null}<TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/admin" /><span className="production-mode">{mode}</span><SignOutButton /></div>
       </header>
       <div className="production-page">
         <div className="production-title-row">
-          <div><span>Authenticated tenant control plane</span><h1>Production administration</h1><p>Manage only persisted configuration for <strong>{tenant.organization.name}</strong>. Your role is <strong>{tenant.role}</strong>.</p></div>
-          <Link href="/" className="button secondary">Back to readiness</Link>
+          <div><span>Authenticated brand control plane</span><h1>Production administration</h1><p>Manage persisted brand and location configuration for <strong>{tenant.organization.name}</strong>. Your role is <strong>{tenant.role}</strong>.</p></div>
+          <Link href="/" className="button secondary">Back to brand dashboard</Link>
         </div>
 
-        <section className="production-readiness-grid" aria-label="Tenant readiness">
+        <section className="production-readiness-grid" aria-label="Brand readiness">
           <div><span>Active locations</span><strong>{tenant.readiness.activeLocationCount}</strong></div>
           <div><span>Enabled connections</span><strong>{tenant.readiness.enabledConnectionCount}</strong></div>
           <div><span>Assigned locations</span><strong>{tenant.readiness.assignedActiveLocationCount}</strong></div>

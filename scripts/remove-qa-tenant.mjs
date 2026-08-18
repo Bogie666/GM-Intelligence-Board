@@ -5,6 +5,8 @@ import { createClient } from "@supabase/supabase-js";
 const HELP = `Usage:
   NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \\
   SUPABASE_SERVICE_ROLE_KEY='...' \\
+  GM_PLATFORM_OWNER_PROFILE_ID='platform-owner-profile-uuid' \\
+  GM_DEFAULT_PORTFOLIO_ID='portfolio-uuid' \\
   node scripts/remove-qa-tenant.mjs \\
     --email qa-owner@example.com \\
     --organization-slug qa-disposable-pilot \\
@@ -164,10 +166,16 @@ async function main() {
   let input;
   let supabaseUrl;
   let serviceRoleKey;
+  let platformOwnerProfileId;
+  let defaultPortfolioId;
   try {
     input = validateInputs(args);
     supabaseUrl = validateUrl(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
     serviceRoleKey = validateServiceRoleKey(process.env.SUPABASE_SERVICE_ROLE_KEY);
+    platformOwnerProfileId = process.env.GM_PLATFORM_OWNER_PROFILE_ID?.trim();
+    defaultPortfolioId = process.env.GM_DEFAULT_PORTFOLIO_ID?.trim();
+    if (!UUID.test(platformOwnerProfileId ?? "")) throw new Error("GM_PLATFORM_OWNER_PROFILE_ID is missing or malformed");
+    if (!UUID.test(defaultPortfolioId ?? "")) throw new Error("GM_DEFAULT_PORTFOLIO_ID is missing or malformed");
   } catch (error) {
     fail(error.message);
     return;
@@ -197,13 +205,16 @@ async function main() {
       if (organization.slug !== input.slug) {
         throw new Error("organization ID and supplied QA slug do not match");
       }
-      const { data, error } = await client.rpc("remove_empty_qa_tenant", {
+      const { data, error } = await client.rpc("remove_empty_qa_brand_from_portfolio", {
+        p_portfolio_id: defaultPortfolioId,
         p_organization_id: input.organizationId,
-        p_user_id: input.userId,
+        p_qa_user_id: input.userId,
+        p_platform_owner_profile_id: platformOwnerProfileId,
         p_expected_slug: input.slug,
+        p_reason: `Remove disposable QA brand ${input.slug}`,
       });
-      if (error) throw new Error(`database QA teardown refused${formatErrorCode(error)}`);
-      if (data !== true) throw new Error("database QA teardown returned an unexpected result");
+      if (error) throw new Error(`atomic portfolio QA teardown refused${formatErrorCode(error)}`);
+      if (data !== true) throw new Error("atomic portfolio QA teardown returned an unexpected result");
       console.log("Empty QA tenant database rows removed.");
     } else {
       // Resume only the narrow failure window after DB teardown committed and before Auth

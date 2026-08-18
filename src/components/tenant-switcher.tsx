@@ -16,9 +16,9 @@ export function TenantSwitcher({
   return (
     <form action={selectTenantAction} className="tenant-switcher">
       <label>
-        <span>Tenant</span>
+        <span>Brand</span>
         <select name="organizationId" required defaultValue={selectedOrganizationId ?? ""}>
-          {!selectedOrganizationId ? <option value="" disabled>Select tenant</option> : null}
+          {!selectedOrganizationId ? <option value="" disabled>Select brand</option> : null}
           {tenants.map((tenant) => (
             <option key={tenant.organizationId} value={tenant.organizationId}>
               {tenant.name}
@@ -27,7 +27,7 @@ export function TenantSwitcher({
         </select>
       </label>
       <input type="hidden" name="next" value={nextPath} />
-      <button className="button secondary" type="submit">Switch</button>
+      <button className="button secondary" type="submit">Switch brand</button>
     </form>
   );
 }

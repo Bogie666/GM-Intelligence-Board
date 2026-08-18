@@ -81,6 +81,7 @@ Apply migrations in timestamp order:
 9. `20260818000700_constraint_validator_acl.sql`
 10. `20260818000800_audit_secret_redaction.sql`
 11. `20260818000900_multi_tenant_operator_access.sql`
+12. `20260818001000_champions_group_portfolio.sql`
 
 Verify migration state before application promotion:
 
@@ -98,17 +99,25 @@ APP_MODE=production
 NEXT_PUBLIC_SUPABASE_URL=https://PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=publishable/RLS-constrained value
 SUPABASE_SERVICE_ROLE_KEY=operator/worker environment only
+GM_PLATFORM_OWNER_PROFILE_ID=approved Champions Group operator profile UUID
+GM_DEFAULT_PORTFOLIO_ID=c1000000-0000-4000-8000-000000000001
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Normal web requests do not require the service-role key.
 
-The application release is compiled to require the exact database marker `20260818000900_multi_tenant_operator_access`; the expected marker is intentionally not environment-configurable.
+The application release is compiled to require the exact database marker `20260818001000_champions_group_portfolio`; the expected marker is intentionally not environment-configurable.
 
 Private-pilot user creation is enforced at the database boundary: only a service-role-preauthorized email can be created, the authorization expires after five minutes, and it is consumed once. The bootstrap script performs this authorization immediately before `admin.createUser()`. If Supabase Management API access becomes available, also disable provider-level public signup as defense in depth.
 
 Pin the deployment runtime to Node 22. The package declares `22.x`, and `.nvmrc` contains `22`.
 
-## Tenant onboarding procedure
+## Portfolio promotion requirement
+
+Migration `01000` intentionally creates no user-specific portfolio membership. Immediately after applying it, use the service-role client to call `grant_portfolio_owner_access` for the approved Champions Group operator profile with an audit reason. Then verify `get_release_readiness()` returns `ready=true` before deploying the application. A fresh schema is expected to remain unavailable until this explicit grant is complete.
+
+Future brand onboarding must use `scripts/bootstrap-tenant.mjs` with both protected operator variables above. The script invokes `finalize_brand_portfolio_onboarding`, which atomically refreshes the approved operator's explicit brand memberships and attaches the new brand to Champions Group. Missing variables fail before Auth-user or tenant creation.
+
+## Brand onboarding procedure
 
 ### 1. Bootstrap the owner
 

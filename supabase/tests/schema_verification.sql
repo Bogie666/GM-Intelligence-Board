@@ -25,7 +25,11 @@ declare
     'profile_layouts',
     'audit_events',
     'schema_releases',
-    'pilot_auth_email_authorizations'
+    'pilot_auth_email_authorizations',
+    'portfolios',
+    'portfolio_memberships',
+    'portfolio_organizations',
+    'portfolio_audit_events'
   ];
   worker_read_only_tables constant text[] := array[
     'service_titan_report_evidence',
@@ -35,7 +39,11 @@ declare
   ];
   rpc_only_tables constant text[] := array[
     'schema_releases',
-    'pilot_auth_email_authorizations'
+    'pilot_auth_email_authorizations',
+    'portfolios',
+    'portfolio_memberships',
+    'portfolio_organizations',
+    'portfolio_audit_events'
   ];
   rpc_managed_tables constant text[] := array[
     'service_titan_connections',
@@ -214,6 +222,12 @@ begin
      or not pg_catalog.has_function_privilege('service_role', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.remove_empty_qa_tenant(uuid,uuid,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('authenticated', 'public.remove_empty_qa_tenant(uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.finalize_brand_portfolio_onboarding(uuid,uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.finalize_brand_portfolio_onboarding(uuid,uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.prepare_empty_qa_brand_removal(uuid,uuid,uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('service_role', 'public.prepare_empty_qa_brand_removal(uuid,uuid,uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.remove_empty_qa_brand_from_portfolio(uuid,uuid,uuid,uuid,text,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.remove_empty_qa_brand_from_portfolio(uuid,uuid,uuid,uuid,text,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.register_service_titan_connection(uuid,text,text,text,text,uuid)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.register_service_titan_connection(uuid,text,text,text,text,uuid)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.disable_service_titan_connection(uuid,uuid)', 'EXECUTE')
@@ -229,7 +243,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260818000900_multi_tenant_operator_access' then
+     or release_marker is distinct from '20260818001000_champions_group_portfolio' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -257,6 +271,9 @@ begin
       'public.can_view_current_kpi_observation(uuid,uuid,text,bigint,text)'::pg_catalog.regprocedure,
       'public.register_service_titan_connection(uuid,text,text,text,text,uuid)'::pg_catalog.regprocedure,
       'public.disable_service_titan_connection(uuid,uuid)'::pg_catalog.regprocedure,
+      'public.has_portfolio_access()'::pg_catalog.regprocedure,
+      'public.can_access_portfolio_brand(uuid)'::pg_catalog.regprocedure,
+      'public.get_portfolio_overview()'::pg_catalog.regprocedure,
       'public.is_finite_numeric(numeric)'::pg_catalog.regprocedure,
       'public.jsonb_has_forbidden_credential_keys(jsonb)'::pg_catalog.regprocedure
     ]));
@@ -416,7 +433,8 @@ $$;
 insert into public.pilot_auth_email_authorizations (email, expires_at) values
   ('schema-owner-a@example.invalid', pg_catalog.now() + interval '5 minutes'),
   ('schema-owner-b@example.invalid', pg_catalog.now() + interval '5 minutes'),
-  ('schema-bootstrap@example.invalid', pg_catalog.now() + interval '5 minutes');
+  ('schema-bootstrap@example.invalid', pg_catalog.now() + interval '5 minutes'),
+  ('schema-platform-operator@example.invalid', pg_catalog.now() + interval '5 minutes');
 
 insert into auth.users (
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -431,11 +449,15 @@ insert into auth.users (
    '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', ''),
   ('00000000-0000-0000-0000-000000000000', '30000000-0000-4000-8000-000000000003',
    'authenticated', 'authenticated', 'schema-bootstrap@example.invalid', '', pg_catalog.now(),
+   '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', ''),
+  ('00000000-0000-0000-0000-000000000000', '40000000-0000-4000-8000-000000000004',
+   'authenticated', 'authenticated', 'schema-platform-operator@example.invalid', '', pg_catalog.now(),
    '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', '');
 
 insert into public.profiles (id, display_name) values
   ('10000000-0000-4000-8000-000000000001', 'Schema Owner A'),
-  ('20000000-0000-4000-8000-000000000002', 'Schema Owner B');
+  ('20000000-0000-4000-8000-000000000002', 'Schema Owner B'),
+  ('40000000-0000-4000-8000-000000000004', 'Schema Platform Operator');
 
 insert into public.organizations (id, slug, name) values
   ('a0000000-0000-4000-8000-000000000001', 'schema-tenant-a', 'Schema Tenant A'),
@@ -568,6 +590,7 @@ declare
   second_created boolean;
   first_organization_id uuid;
   second_organization_id uuid;
+  shared_user_denied boolean := false;
 begin
   select result.created, result.organization_id
     into first_created, first_organization_id
@@ -595,13 +618,61 @@ begin
     raise exception 'service-role tenant bootstrap is not idempotent';
   end if;
 
-  if not public.remove_empty_qa_tenant(
+  perform public.finalize_brand_portfolio_onboarding(
+    'c1000000-0000-4000-8000-000000000001',
+    first_organization_id,
+    '40000000-0000-4000-8000-000000000004',
+    'Schema verification QA portfolio onboarding'
+  );
+  insert into public.organization_memberships (organization_id, profile_id, role, status, joined_at)
+  values (
+    'a0000000-0000-4000-8000-000000000001',
+    '30000000-0000-4000-8000-000000000003',
+    'viewer',
+    'active',
+    pg_catalog.now()
+  );
+  begin
+    perform public.remove_empty_qa_brand_from_portfolio(
+      'c1000000-0000-4000-8000-000000000001',
+      first_organization_id,
+      '30000000-0000-4000-8000-000000000003',
+      '40000000-0000-4000-8000-000000000004',
+      'qa-schema-bootstrap',
+      'Schema verification shared-user rollback'
+    );
+  exception when raise_exception then
+    shared_user_denied := true;
+  end;
+  if not shared_user_denied
+     or not exists (
+       select 1 from public.portfolio_organizations attachment
+       where attachment.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+         and attachment.organization_id = first_organization_id and attachment.status = 'active'
+     )
+     or not exists (
+       select 1 from public.organization_memberships membership
+       where membership.organization_id = first_organization_id
+         and membership.profile_id = '40000000-0000-4000-8000-000000000004'
+     ) then
+    raise exception 'failed atomic QA teardown did not preserve portfolio and platform-owner state';
+  end if;
+  delete from public.organization_memberships membership
+  where membership.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and membership.profile_id = '30000000-0000-4000-8000-000000000003';
+
+  if not public.remove_empty_qa_brand_from_portfolio(
+    'c1000000-0000-4000-8000-000000000001',
     first_organization_id,
     '30000000-0000-4000-8000-000000000003',
-    'qa-schema-bootstrap'
+    '40000000-0000-4000-8000-000000000004',
+    'qa-schema-bootstrap',
+    'Schema verification atomic QA teardown'
   ) then
-    raise exception 'guarded QA teardown did not report success';
+    raise exception 'atomic portfolio QA teardown did not report success';
   end if;
+  delete from public.organization_memberships membership
+  where membership.profile_id = '40000000-0000-4000-8000-000000000004';
 
   if exists (select 1 from public.organizations where id = first_organization_id)
      or exists (select 1 from public.profiles where id = '30000000-0000-4000-8000-000000000003') then
@@ -834,6 +905,120 @@ begin
   end if;
 end
 $operator_access$;
+
+-- Prove the Champions Group portfolio is explicit, complete, audited, and RPC-only.
+do $portfolio_service_setup$
+declare
+  brand record;
+  active_brand_count integer;
+  overview_brand_count integer;
+  release_ready boolean;
+  release_marker text;
+  denied boolean;
+begin
+  perform public.grant_portfolio_owner_access(
+    'c1000000-0000-4000-8000-000000000001',
+    '10000000-0000-4000-8000-000000000001',
+    'Schema verification portfolio owner'
+  );
+  for brand in
+    select organization.id from public.organizations organization where organization.status = 'active'
+  loop
+    perform public.attach_brand_to_portfolio(
+      'c1000000-0000-4000-8000-000000000001', brand.id, 'Schema verification active brand attachment'
+    );
+  end loop;
+
+  select count(*)::integer into active_brand_count
+  from public.organizations organization where organization.status = 'active';
+  if (
+    select count(*) from public.portfolio_organizations attachment
+    where attachment.portfolio_id = 'c1000000-0000-4000-8000-000000000001' and attachment.status = 'active'
+  ) <> active_brand_count then
+    raise exception 'portfolio attachment coverage is incomplete';
+  end if;
+  if not exists (
+    select 1 from public.portfolio_audit_events audit
+    where audit.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+      and audit.target_profile_id = '10000000-0000-4000-8000-000000000001'
+      and audit.event_type = 'portfolio_memberships.insert'
+  ) then
+    raise exception 'portfolio owner grant was not audited';
+  end if;
+  if pg_catalog.has_table_privilege('authenticated', 'public.portfolios', 'SELECT,INSERT,UPDATE,DELETE')
+    or pg_catalog.has_table_privilege('authenticated', 'public.portfolio_memberships', 'SELECT,INSERT,UPDATE,DELETE')
+    or pg_catalog.has_table_privilege('authenticated', 'public.portfolio_organizations', 'SELECT,INSERT,UPDATE,DELETE')
+    or pg_catalog.has_table_privilege('authenticated', 'public.portfolio_audit_events', 'SELECT,INSERT,UPDATE,DELETE')
+    or pg_catalog.has_table_privilege('service_role', 'public.portfolios', 'INSERT,UPDATE,DELETE,TRUNCATE')
+    or pg_catalog.has_table_privilege('service_role', 'public.portfolio_memberships', 'INSERT,UPDATE,DELETE,TRUNCATE')
+    or pg_catalog.has_table_privilege('service_role', 'public.portfolio_organizations', 'INSERT,UPDATE,DELETE,TRUNCATE')
+    or pg_catalog.has_table_privilege('service_role', 'public.portfolio_audit_events', 'INSERT,UPDATE,DELETE,TRUNCATE') then
+    raise exception 'portfolio governance tables must be mutation-free outside governed RPCs';
+  end if;
+
+  denied := false;
+  begin
+    update public.portfolio_audit_events set reason = 'mutated audit' where portfolio_id = 'c1000000-0000-4000-8000-000000000001';
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'portfolio audit mutation was not denied'; end if;
+
+  denied := false;
+  begin
+    delete from public.portfolio_organizations
+    where portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+      and organization_id = 'a0000000-0000-4000-8000-000000000001';
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'non-QA portfolio attachment deletion was not denied'; end if;
+
+  select readiness.ready, readiness.release_marker into release_ready, release_marker
+  from public.get_release_readiness() readiness;
+  if release_ready is distinct from true or release_marker is distinct from '20260818001000_champions_group_portfolio' then
+    raise exception 'portfolio release readiness failed after fixture attachment';
+  end if;
+end
+$portfolio_service_setup$;
+reset role;
+
+set local role authenticated;
+select pg_catalog.set_config('request.jwt.claim.role', 'authenticated', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
+select pg_catalog.set_config('request.jwt.claims', '{"sub":"10000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
+do $portfolio_authenticated$
+declare
+  active_brand_count integer;
+  overview_brand_count integer;
+begin
+  if public.has_portfolio_access() is distinct from true then raise exception 'portfolio owner access was not resolved'; end if;
+  select count(*)::integer into active_brand_count from public.organizations organization where organization.status = 'active';
+  select count(*)::integer into overview_brand_count from public.get_portfolio_overview();
+  if overview_brand_count <> active_brand_count then
+    raise exception 'portfolio overview returned % brands, expected %', overview_brand_count, active_brand_count;
+  end if;
+  if public.can_access_portfolio_brand('b0000000-0000-4000-8000-000000000002') is distinct from true then
+    raise exception 'portfolio owner could not navigate to an explicitly authorized brand';
+  end if;
+end
+$portfolio_authenticated$;
+
+select pg_catalog.set_config('request.jwt.claim.sub', '20000000-0000-4000-8000-000000000002', true);
+select pg_catalog.set_config('request.jwt.claims', '{"sub":"20000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
+do $portfolio_unauthorized$
+declare
+  denied boolean := false;
+begin
+  if public.has_portfolio_access() is distinct from false then raise exception 'brand-only user gained portfolio access'; end if;
+  if public.can_access_portfolio_brand('b0000000-0000-4000-8000-000000000002') is distinct from false then
+    raise exception 'brand-only user gained portfolio navigation access';
+  end if;
+  begin
+    perform * from public.get_portfolio_overview();
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'brand-only user could execute the portfolio overview'; end if;
+end
+$portfolio_unauthorized$;
 reset role;
 
 -- anon can execute only the non-secret readiness RPC; this SELECT itself proves execution.
