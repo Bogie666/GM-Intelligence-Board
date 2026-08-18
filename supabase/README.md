@@ -17,7 +17,8 @@ This directory contains version-controlled schema artifacts for the isolated GM 
 - `migrations/20260818000800_audit_secret_redaction.sql` — removes managed-secret locators from historical and future connection audit snapshots.
 - `migrations/20260818000900_multi_tenant_operator_access.sql` — service-role-only atomic owner-membership grant for explicitly approved multi-tenant operators.
 - `migrations/20260818001000_champions_group_portfolio.sql` — explicit Champions Group portfolio, brand attachments, portfolio memberships, audited lifecycle RPCs, and fail-closed portfolio overview.
-- `migrations/20260818001100_portfolio_audit_trigger_fix.sql` — table-safe portfolio audit identity comparisons and the current release marker.
+- `migrations/20260818001100_portfolio_audit_trigger_fix.sql` — table-safe portfolio audit identity comparisons.
+- `migrations/20260818001200_atomic_qa_portfolio_cleanup.sql` — QA-only terminal portfolio-membership cleanup with immutable historical subject IDs and the current release marker.
 - `tests/schema_verification.sql` — catalog assertions plus rollback-only service-role/bootstrap and authenticated cross-tenant RLS behavior checks.
 
 The migration models organizations, locations, Auth-linked profiles, memberships/RBAC, credential-free ServiceTitan metadata and exact location assignments, governed saved-report sources, source-fingerprint evidence, versioned custom KPI definitions and exact location bindings, append-only observations, targets, layouts, and append-only audit events.
@@ -32,7 +33,7 @@ Approval and membership authorization are also enforced by database triggers rat
 
 ## Release readiness
 
-Migration `20260818001100` records the non-secret marker `20260818001100_portfolio_audit_trigger_fix` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. Readiness also requires the active Champions Group portfolio, at least one active portfolio owner, and attachment coverage for every active brand. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
+Migration `20260818001200` records the non-secret marker `20260818001200_atomic_qa_portfolio_cleanup` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. Readiness also requires the active Champions Group portfolio, at least one active portfolio owner, and attachment coverage for every active brand. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
 
 ## Auth and first-organization bootstrap
 

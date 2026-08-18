@@ -243,7 +243,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260818001100_portfolio_audit_trigger_fix' then
+     or release_marker is distinct from '20260818001200_atomic_qa_portfolio_cleanup' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -624,6 +624,16 @@ begin
     '40000000-0000-4000-8000-000000000004',
     'Schema verification QA portfolio onboarding'
   );
+  perform public.grant_portfolio_owner_access(
+    'c1000000-0000-4000-8000-000000000001',
+    '30000000-0000-4000-8000-000000000003',
+    'Schema verification temporary QA portfolio access'
+  );
+  perform public.revoke_portfolio_membership(
+    'c1000000-0000-4000-8000-000000000001',
+    '30000000-0000-4000-8000-000000000003',
+    'Schema verification terminal QA portfolio access'
+  );
   insert into public.organization_memberships (organization_id, profile_id, role, status, joined_at)
   values (
     'a0000000-0000-4000-8000-000000000001',
@@ -654,6 +664,12 @@ begin
        select 1 from public.organization_memberships membership
        where membership.organization_id = first_organization_id
          and membership.profile_id = '40000000-0000-4000-8000-000000000004'
+     )
+     or not exists (
+       select 1 from public.portfolio_memberships membership
+       where membership.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+         and membership.profile_id = '30000000-0000-4000-8000-000000000003'
+         and membership.status = 'revoked'
      ) then
     raise exception 'failed atomic QA teardown did not preserve portfolio and platform-owner state';
   end if;
@@ -670,6 +686,18 @@ begin
     'Schema verification atomic QA teardown'
   ) then
     raise exception 'atomic portfolio QA teardown did not report success';
+  end if;
+  if exists (
+    select 1 from public.portfolio_memberships membership
+    where membership.profile_id = '30000000-0000-4000-8000-000000000003'
+  ) or not exists (
+    select 1 from public.portfolio_audit_events audit
+    where audit.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
+      and audit.target_profile_id = '30000000-0000-4000-8000-000000000003'
+      and audit.event_type = 'portfolio_memberships.delete'
+      and audit.before_state ->> 'status' = 'revoked'
+  ) then
+    raise exception 'atomic QA teardown did not remove only the terminal membership while retaining audit history';
   end if;
   delete from public.organization_memberships membership
   where membership.profile_id = '40000000-0000-4000-8000-000000000004';
@@ -998,7 +1026,7 @@ begin
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260818001100_portfolio_audit_trigger_fix' then
+  if release_ready is distinct from true or release_marker is distinct from '20260818001200_atomic_qa_portfolio_cleanup' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end

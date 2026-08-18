@@ -13,7 +13,7 @@ export interface DatabaseHealth {
 
 let healthClient: SupabaseClient | undefined;
 let healthClientIdentity = "";
-const EXPECTED_SCHEMA_RELEASE = "20260818001100_portfolio_audit_trigger_fix";
+const EXPECTED_SCHEMA_RELEASE = "20260818001200_atomic_qa_portfolio_cleanup";
 
 function publicServerEnvironment(): { url: string; anonKey: string } | undefined {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
