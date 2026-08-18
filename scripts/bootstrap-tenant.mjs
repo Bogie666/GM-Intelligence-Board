@@ -6,6 +6,7 @@ const HELP = `Usage:
   BOOTSTRAP_USER_PASSWORD='...' \\
   NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \\
   SUPABASE_SERVICE_ROLE_KEY='...' \\
+  GM_PLATFORM_OWNER_PROFILE_ID='optional-profile-uuid' \\
   node scripts/bootstrap-tenant.mjs \\
     --email owner@example.com \\
     --display-name 'Pilot Owner' \\
@@ -15,6 +16,8 @@ const HELP = `Usage:
 
 The password and service-role key are accepted only through environment variables so they do
 not appear in shell history or process arguments. The script never prints either value.`;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function fail(message) {
   console.error(`Bootstrap failed: ${message}`);
@@ -207,6 +210,20 @@ async function main() {
     }
 
     const result = data[0];
+    authUserCreated = false;
+    const platformOwnerProfileId = process.env.GM_PLATFORM_OWNER_PROFILE_ID?.trim();
+    if (platformOwnerProfileId) {
+      if (!UUID_PATTERN.test(platformOwnerProfileId)) {
+        throw new Error("GM_PLATFORM_OWNER_PROFILE_ID is malformed; tenant bootstrap succeeded but operator-wide access was not refreshed");
+      }
+      const { data: tenantCount, error: platformGrantError } = await client.rpc("grant_owner_access_to_all_tenants", {
+        p_profile_id: platformOwnerProfileId,
+      });
+      if (platformGrantError) {
+        throw new Error(`tenant bootstrap succeeded but operator-wide access refresh failed${formatErrorCode(platformGrantError)}`);
+      }
+      console.log(`Platform owner access verified across ${tenantCount} active tenant(s).`);
+    }
     console.log(result.created ? "Tenant bootstrap created." : "Tenant bootstrap already complete.");
     console.log(`Profile ID: ${result.profile_id}`);
     console.log(`Organization ID: ${result.organization_id}`);

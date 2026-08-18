@@ -19,6 +19,7 @@ import type {
   TenantLocation,
 } from "@/lib/tenant-context";
 import { SignOutButton } from "@/components/sign-out-button";
+import { TenantSwitcher } from "@/components/tenant-switcher";
 
 const INITIAL_ADMIN_ACTION_STATE: AdminActionState = { status: "idle", message: "" };
 
@@ -207,7 +208,7 @@ export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTen
     <main className="production-shell">
       <header className="production-topbar">
         <Link href="/" className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></Link>
-        <div><span className="production-mode">{mode}</span><SignOutButton /></div>
+        <div><TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/admin" /><span className="production-mode">{mode}</span><SignOutButton /></div>
       </header>
       <div className="production-page">
         <div className="production-title-row">

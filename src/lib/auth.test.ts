@@ -11,10 +11,10 @@ import {
 } from "./auth";
 
 const activeMembership = (overrides: Partial<MembershipCandidate> = {}): MembershipCandidate => ({
-  organization_id: "organization-one",
+  organization_id: "11111111-1111-4111-8111-111111111111",
   role: "viewer",
   status: "active",
-  organizations: { status: "active" },
+  organizations: { id: "11111111-1111-4111-8111-111111111111", slug: "organization-one", name: "Organization One", status: "active" },
   ...overrides,
 });
 
@@ -57,7 +57,8 @@ describe("resolveActiveMembership", () => {
   it("resolves exactly one active membership in an active organization", () => {
     expect(resolveActiveMembership([activeMembership({ role: "admin" })])).toEqual({
       ok: true,
-      membership: { organizationId: "organization-one", role: "admin" },
+      membership: { organizationId: "11111111-1111-4111-8111-111111111111", role: "admin" },
+      availableTenants: [{ organizationId: "11111111-1111-4111-8111-111111111111", role: "admin", slug: "organization-one", name: "Organization One" }],
     });
   });
 
@@ -71,13 +72,26 @@ describe("resolveActiveMembership", () => {
     ).toEqual({ ok: false, reason: "no-active-membership" });
   });
 
-  it("rejects ambiguous active memberships", () => {
-    expect(
-      resolveActiveMembership([
-        activeMembership(),
-        activeMembership({ organization_id: "organization-two", role: "owner" }),
-      ]),
-    ).toEqual({ ok: false, reason: "ambiguous-active-memberships" });
+  it("requires an explicit selection for multiple memberships and resolves a valid selection", () => {
+    const second = activeMembership({
+      organization_id: "22222222-2222-4222-8222-222222222222",
+      role: "owner",
+      organizations: { id: "22222222-2222-4222-8222-222222222222", slug: "organization-two", name: "Organization Two", status: "active" },
+    });
+    const unresolved = resolveActiveMembership([activeMembership(), second]);
+    expect(unresolved.ok).toBe(false);
+    if (unresolved.ok === false) {
+      expect(unresolved.reason).toBe("tenant-selection-required");
+      expect(unresolved.availableTenants).toHaveLength(2);
+    }
+    expect(resolveActiveMembership([activeMembership(), second], "22222222-2222-4222-8222-222222222222")).toMatchObject({
+      ok: true,
+      membership: { organizationId: "22222222-2222-4222-8222-222222222222", role: "owner" },
+    });
+    expect(resolveActiveMembership([activeMembership(), second], "33333333-3333-4333-8333-333333333333")).toMatchObject({
+      ok: false,
+      reason: "tenant-selection-required",
+    });
   });
 
   it("fails closed for malformed roles and organization relationships", () => {
@@ -88,6 +102,10 @@ describe("resolveActiveMembership", () => {
     expect(resolveActiveMembership([activeMembership({ organizations: null })])).toEqual({
       ok: false,
       reason: "no-active-membership",
+    });
+    expect(resolveActiveMembership([activeMembership({ organizations: { id: "22222222-2222-4222-8222-222222222222", slug: "wrong", name: "Wrong", status: "active" } })])).toEqual({
+      ok: false,
+      reason: "invalid-membership",
     });
   });
 });

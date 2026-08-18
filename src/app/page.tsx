@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Dashboard } from "@/components/dashboard";
 import { SignOutButton } from "@/components/sign-out-button";
+import { TenantSwitcher } from "@/components/tenant-switcher";
 import { isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
 import { getProductionTenantContext } from "@/lib/tenant-context";
@@ -19,6 +20,20 @@ export default async function Home() {
   const result = await getProductionTenantContext();
   if (!result.ok) {
     if (result.reason === "unauthenticated") redirect("/login?next=/");
+    if (result.reason === "tenant-selection-required" && result.availableTenants) {
+      return (
+        <main className="production-state-page">
+          <section className="production-state-card">
+            <span className="production-state-mark">CG</span>
+            <p className="production-kicker">Platform access</p>
+            <h1>Select a tenant</h1>
+            <p>Choose the organization you want to view. Every selection is revalidated against your active database memberships.</p>
+            <TenantSwitcher tenants={result.availableTenants} nextPath="/" />
+            <SignOutButton />
+          </section>
+        </main>
+      );
+    }
     return (
       <main className="production-state-page">
         <section className="production-state-card" role="alert">
@@ -38,7 +53,7 @@ export default async function Home() {
     <main className="production-shell">
       <header className="production-topbar">
         <div className="production-brand"><span>CG</span><div><strong>GM Intelligence Board</strong><small>{tenant.organization.name}</small></div></div>
-        <div><span className="production-mode">{config.mode}</span><SignOutButton /></div>
+        <div><TenantSwitcher tenants={tenant.availableTenants} selectedOrganizationId={tenant.organization.id} nextPath="/" /><span className="production-mode">{config.mode}</span><SignOutButton /></div>
       </header>
       <div className="production-home">
         <section className="production-hero">

@@ -229,7 +229,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260818000800_audit_secret_redaction' then
+     or release_marker is distinct from '20260818000900_multi_tenant_operator_access' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -444,7 +444,7 @@ insert into public.organizations (id, slug, name) values
 insert into public.organization_memberships (
   id, organization_id, profile_id, role, status, joined_at
 ) values
-  ('a1000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000001',
+  ('10000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000001',
    '10000000-0000-4000-8000-000000000001', 'owner', 'active', pg_catalog.now()),
   ('b2000000-0000-4000-8000-000000000002', 'b0000000-0000-4000-8000-000000000002',
    '20000000-0000-4000-8000-000000000002', 'owner', 'active', pg_catalog.now());
@@ -801,6 +801,39 @@ begin
 end
 $rls_behavior$;
 
+reset role;
+
+-- Prove the operator-wide grant is service-role-only, idempotent, and explicit membership based.
+set local role service_role;
+select pg_catalog.set_config('request.jwt.claim.role', 'service_role', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '', true);
+select pg_catalog.set_config('request.jwt.claims', '{"role":"service_role"}', true);
+do $operator_access$
+declare
+  active_tenant_count integer;
+  tenant_count integer;
+begin
+  select pg_catalog.count(*)::integer into active_tenant_count
+  from public.organizations organization
+  where organization.status = 'active';
+  tenant_count := public.grant_owner_access_to_all_tenants('10000000-0000-4000-8000-000000000001');
+  if tenant_count <> active_tenant_count then
+    raise exception 'operator-wide owner grant returned %, expected %', tenant_count, active_tenant_count;
+  end if;
+  if public.grant_owner_access_to_all_tenants('10000000-0000-4000-8000-000000000001') <> active_tenant_count then
+    raise exception 'operator-wide owner grant was not idempotent';
+  end if;
+  if (
+    select pg_catalog.count(*)
+    from public.organization_memberships membership
+    where membership.profile_id = '10000000-0000-4000-8000-000000000001'
+      and membership.role = 'owner'
+      and membership.status = 'active'
+  ) <> active_tenant_count then
+    raise exception 'operator-wide grant did not materialize explicit memberships';
+  end if;
+end
+$operator_access$;
 reset role;
 
 -- anon can execute only the non-secret readiness RPC; this SELECT itself proves execution.

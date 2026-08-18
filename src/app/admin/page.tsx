@@ -3,6 +3,7 @@ import Link from "next/link";
 import { AdminConsole } from "@/components/admin-console";
 import { ProductionAdminConsole } from "@/components/production-admin-console";
 import { SignOutButton } from "@/components/sign-out-button";
+import { TenantSwitcher } from "@/components/tenant-switcher";
 import { isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
 import { getProductionTenantContext } from "@/lib/tenant-context";
@@ -14,6 +15,20 @@ export default async function AdminPage() {
   const result = await getProductionTenantContext();
   if (!result.ok) {
     if (result.reason === "unauthenticated") redirect("/login?next=/admin");
+    if (result.reason === "tenant-selection-required" && result.availableTenants) {
+      return (
+        <main className="production-state-page">
+          <section className="production-state-card">
+            <span className="production-state-mark">CG</span>
+            <p className="production-kicker">Platform administration</p>
+            <h1>Select a tenant</h1>
+            <p>Choose the organization you want to configure.</p>
+            <TenantSwitcher tenants={result.availableTenants} nextPath="/admin" />
+            <SignOutButton />
+          </section>
+        </main>
+      );
+    }
     return (
       <main className="production-state-page">
         <section className="production-state-card" role="alert">

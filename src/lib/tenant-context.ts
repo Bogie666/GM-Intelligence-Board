@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getTenantAuthContext, type OrganizationRole } from "@/lib/auth";
+import { getTenantAuthContext, type OrganizationRole, type TenantAccessOption } from "@/lib/auth";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KEY_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
@@ -101,6 +101,7 @@ export interface ProductionKpiStatus {
 export interface ProductionTenantContext {
   user: { id: string; email: string | null };
   role: OrganizationRole;
+  availableTenants: TenantAccessOption[];
   organization: TenantOrganization;
   locations: TenantLocation[];
   connections: ServiceTitanConnection[];
@@ -117,10 +118,11 @@ export type ProductionTenantContextResult =
         | "unauthenticated"
         | "membership-query-failed"
         | "no-active-membership"
-        | "ambiguous-active-memberships"
+        | "tenant-selection-required"
         | "invalid-membership"
         | "tenant-query-failed";
       message: string;
+      availableTenants?: TenantAccessOption[];
     };
 
 function text(value: unknown): string {
@@ -253,7 +255,7 @@ const AUTH_MESSAGES: Record<Exclude<ProductionTenantContextResult, { ok: true }>
   unauthenticated: "Sign in is required to access tenant data.",
   "membership-query-failed": "Your tenant membership could not be verified.",
   "no-active-membership": "No active tenant membership is available for this account.",
-  "ambiguous-active-memberships": "This account has more than one active tenant membership; access is blocked until an administrator resolves it.",
+  "tenant-selection-required": "Choose the tenant you want to view or configure.",
   "invalid-membership": "The active tenant membership is invalid; access is blocked.",
   "tenant-query-failed": "Tenant configuration could not be loaded from the database.",
 };
@@ -344,7 +346,7 @@ async function loadProductionKpis(
 export async function getProductionTenantContext(): Promise<ProductionTenantContextResult> {
   const auth = await getTenantAuthContext();
   if (!auth.ok) {
-    return { ok: false, reason: auth.reason, message: AUTH_MESSAGES[auth.reason] };
+    return { ok: false, reason: auth.reason, message: AUTH_MESSAGES[auth.reason], availableTenants: auth.availableTenants };
   }
 
   const organizationId = auth.membership.organizationId;
@@ -404,6 +406,7 @@ export async function getProductionTenantContext(): Promise<ProductionTenantCont
     tenant: {
       user: { id: auth.user.id, email: auth.user.email ?? null },
       role: auth.membership.role,
+      availableTenants: auth.availableTenants,
       organization,
       locations,
       connections,

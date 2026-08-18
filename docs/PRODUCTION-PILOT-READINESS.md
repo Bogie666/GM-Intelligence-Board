@@ -80,6 +80,7 @@ Apply migrations in timestamp order:
 8. `20260818000600_acl_fail_closed.sql`
 9. `20260818000700_constraint_validator_acl.sql`
 10. `20260818000800_audit_secret_redaction.sql`
+11. `20260818000900_multi_tenant_operator_access.sql`
 
 Verify migration state before application promotion:
 
@@ -101,7 +102,7 @@ SUPABASE_SERVICE_ROLE_KEY=operator/worker environment only
 
 `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Normal web requests do not require the service-role key.
 
-The application release is compiled to require the exact database marker `20260818000800_audit_secret_redaction`; the expected marker is intentionally not environment-configurable.
+The application release is compiled to require the exact database marker `20260818000900_multi_tenant_operator_access`; the expected marker is intentionally not environment-configurable.
 
 Private-pilot user creation is enforced at the database boundary: only a service-role-preauthorized email can be created, the authorization expires after five minutes, and it is consumed once. The bootstrap script performs this authorization immediately before `admin.createUser()`. If Supabase Management API access becomes available, also disable provider-level public signup as defense in depth.
 

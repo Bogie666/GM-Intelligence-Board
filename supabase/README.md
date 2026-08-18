@@ -15,6 +15,7 @@ This directory contains version-controlled schema artifacts for a **new, isolate
 - `migrations/20260818000600_acl_fail_closed.sql` — explicit fail-closed anonymous/authenticated function ACL allowlists and final release marker.
 - `migrations/20260818000700_constraint_validator_acl.sql` — restores only the pure CHECK-constraint validators required by authenticated configuration writes.
 - `migrations/20260818000800_audit_secret_redaction.sql` — removes managed-secret locators from historical and future connection audit snapshots.
+- `migrations/20260818000900_multi_tenant_operator_access.sql` — service-role-only atomic owner-membership grant for explicitly approved multi-tenant operators.
 - `tests/schema_verification.sql` — catalog assertions plus rollback-only service-role/bootstrap and authenticated cross-tenant RLS behavior checks.
 
 The migration models organizations, locations, Auth-linked profiles, memberships/RBAC, credential-free ServiceTitan metadata and exact location assignments, governed saved-report sources, source-fingerprint evidence, versioned custom KPI definitions and exact location bindings, append-only observations, targets, layouts, and append-only audit events.
@@ -29,7 +30,7 @@ Approval and membership authorization are also enforced by database triggers rat
 
 ## Release readiness
 
-Migration `20260818000800` records the non-secret marker `20260818000800_audit_secret_redaction` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
+Migration `20260818000900` records the non-secret marker `20260818000900_multi_tenant_operator_access` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
 
 ## Auth and first-organization bootstrap
 
