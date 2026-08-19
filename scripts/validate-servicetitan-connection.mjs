@@ -214,21 +214,18 @@ async function probeServiceTitan(connection, credential) {
   return ["settings.business_units.read"];
 }
 
-async function setValidationState(client, input, expectedSecretReference, expectedCredentialRevision, status, capabilities) {
-  const payload = { status, last_validated_at: new Date().toISOString() };
-  if (capabilities) payload.capabilities = capabilities;
-  const { data, error } = await client
-    .from("service_titan_connections")
-    .update(payload)
-    .eq("organization_id", input.organizationId)
-    .eq("id", input.connectionId)
-    .eq("secret_reference", expectedSecretReference)
-    .eq("configuration_revision", expectedCredentialRevision)
-    .not("status", "in", "(disabled,archived)")
-    .select("id")
-    .maybeSingle();
-  if (error) throw new Error("database validation-state update failed");
-  if (!data) throw new Error("connection was disabled, archived, or removed during validation");
+async function setValidationState(client, input, expectedCredentialRevision, status, capabilities) {
+  const succeeded = status === "ready";
+  const { data, error } = await client.rpc("complete_service_titan_connection_validation", {
+    p_organization_id: input.organizationId,
+    p_connection_id: input.connectionId,
+    p_configuration_revision: expectedCredentialRevision,
+    p_succeeded: succeeded,
+    p_capabilities: succeeded ? capabilities : null,
+    p_error_code: succeeded ? null : "validation_failed",
+  });
+  if (error) throw new Error("database validation-state RPC failed");
+  if (data !== true) throw new Error("connection was rotated, disabled, archived, or removed during validation");
 }
 
 async function main() {
@@ -261,36 +258,46 @@ async function main() {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   });
 
-  const { data: connection, error: lookupError } = await client
-    .from("service_titan_connections")
-    .select("id, organization_id, service_titan_tenant_id, environment, secret_reference, configuration_revision, status")
-    .eq("organization_id", input.organizationId)
-    .eq("id", input.connectionId)
-    .maybeSingle();
-  if (lookupError) {
-    fail("database connection lookup failed");
+  const { data: workerContext, error: lookupError } = await client.rpc(
+    "get_service_titan_connection_worker_context",
+    {
+      p_organization_id: input.organizationId,
+      p_connection_id: input.connectionId,
+      p_purpose: "validation",
+    },
+  );
+  if (lookupError || !workerContext || typeof workerContext !== "object" || Array.isArray(workerContext)) {
+    fail("database connection context lookup failed");
     return;
   }
-  if (!connection) {
-    fail("connection was not found for the exact organization and connection IDs");
-    return;
-  }
-  if (connection.status === "disabled" || connection.status === "archived") {
-    fail(`connection status ${connection.status} cannot be validated`);
+  const connection = {
+    id: workerContext.id,
+    organization_id: workerContext.organizationId,
+    service_titan_tenant_id: workerContext.serviceTitanTenantId,
+    environment: workerContext.environment,
+    secret_reference: workerContext.secretReference,
+    configuration_revision: workerContext.configurationRevision,
+    status: workerContext.status,
+  };
+  if (!UUID.test(connection.id ?? "") || connection.organization_id !== input.organizationId
+      || typeof connection.service_titan_tenant_id !== "string"
+      || !["production", "integration"].includes(connection.environment)
+      || !UUID.test(connection.configuration_revision ?? "")) {
+    fail("database connection context was malformed");
     return;
   }
 
   try {
     const credential = await resolveSecret(connection.secret_reference, client, input);
     const capabilities = await probeServiceTitan(connection, credential);
-    await setValidationState(client, input, connection.secret_reference, connection.configuration_revision, "ready", capabilities);
+    await setValidationState(client, input, connection.configuration_revision, "ready", capabilities);
     console.log("ServiceTitan connection validated and marked ready.");
     console.log(`Organization ID: ${input.organizationId}`);
     console.log(`Connection ID: ${input.connectionId}`);
     console.log(`Capabilities: ${capabilities.join(", ")}`);
   } catch (error) {
     try {
-      await setValidationState(client, input, connection.secret_reference, connection.configuration_revision, "needs_attention", null);
+      await setValidationState(client, input, connection.configuration_revision, "needs_attention", null);
     } catch {
       // Preserve the primary validation failure and avoid printing database/provider details.
     }

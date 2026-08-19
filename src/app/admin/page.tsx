@@ -12,7 +12,7 @@ export default async function AdminPage() {
   const config = getAppConfig();
   if (config.isDemo) return <AdminConsole />;
 
-  const result = await getProductionTenantContext();
+  const result = await getProductionTenantContext({ includeAdminConfiguration: true });
   if (!result.ok) {
     if (result.reason === "unauthenticated") redirect("/login?next=/admin");
     if (result.reason === "tenant-selection-required" && result.availableTenants) {

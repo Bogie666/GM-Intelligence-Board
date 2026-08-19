@@ -5,9 +5,13 @@ import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import {
   archiveLocationAction,
+  activateOriginalKpiCatalogAction,
   createConnectionAction,
   createLocationAction,
   disableConnectionAction,
+  replaceBusinessUnitMappingsAction,
+  replaceConnectionLocationsAction,
+  requestBusinessUnitDiscoveryAction,
   rotateConnectionCredentialsAction,
   updateLocationAction,
   updateOrganizationAction,
@@ -68,10 +72,10 @@ function TimezoneSelect({ defaultValue = "America/Chicago" }: { defaultValue?: s
   );
 }
 
-function SubmitButton({ children, danger = false }: { children: React.ReactNode; danger?: boolean }) {
+function SubmitButton({ children, danger = false, disabled = false }: { children: React.ReactNode; danger?: boolean; disabled?: boolean }) {
   const { pending } = useFormStatus();
   return (
-    <button className={`button ${danger ? "production-danger" : "primary"}`} type="submit" disabled={pending}>
+    <button className={`button ${danger ? "production-danger" : "primary"}`} type="submit" disabled={pending || disabled}>
       {pending ? "Saving…" : children}
     </button>
   );
@@ -273,6 +277,102 @@ function ConnectionRecord({ connection, assignments, locations }: { connection: 
   );
 }
 
+function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionTenantContext; connection: ServiceTitanConnection }) {
+  const admin = tenant.adminConfiguration;
+  const [discoveryState, discoveryAction] = useActionState(requestBusinessUnitDiscoveryAction, INITIAL_ADMIN_ACTION_STATE);
+  const [assignmentState, assignmentAction] = useActionState(replaceConnectionLocationsAction, INITIAL_ADMIN_ACTION_STATE);
+  const [mappingState, mappingAction] = useActionState(replaceBusinessUnitMappingsAction, INITIAL_ADMIN_ACTION_STATE);
+  if (!admin || connection.status === "disabled" || connection.status === "archived") return null;
+  const runs = admin.discoveryRuns.filter((run) => run.connection_id === connection.id);
+  const latestRun = runs[0];
+  const units = admin.businessUnits.filter((unit) => unit.connection_id === connection.id && unit.active);
+  const revision = units[0]?.discovery_revision ?? latestRun?.discovery_revision ?? null;
+  const activeAssignments = new Set(tenant.assignments.filter((item) => item.connection_id === connection.id && item.revoked_at === null).map((item) => item.location_id));
+  const mappingByProviderId = new Map(admin.businessUnitMappings.filter((item) => item.connection_id === connection.id && item.revoked_at === null).map((item) => [item.provider_business_unit_id, item]));
+  const assignedLocations = tenant.locations.filter((location) => location.status === "active" && activeAssignments.has(location.id));
+  const canDiscover = connection.status === "ready" && Boolean(connection.last_validated_at);
+
+  return (
+    <section className="production-section" aria-label={`${connection.display_name} discovery and mapping`}>
+      <div className="production-section-title">
+        <div><span>Governed tenant mapping</span><h3>Locations & business units</h3></div>
+        <strong>{units.length} units</strong>
+      </div>
+      <form action={assignmentAction} className="production-form-grid">
+        <input type="hidden" name="connectionId" value={connection.id} />
+        <input type="hidden" name="confirmReplacement" value="yes" />
+        <fieldset>
+          <legend>Assigned operating locations</legend>
+          {tenant.locations.filter((location) => location.status === "active").map((location) => (
+            <label key={location.id} className="production-checkbox-row">
+              <input type="checkbox" name="locationId" value={location.id} defaultChecked={activeAssignments.has(location.id)} />
+              <span>{location.display_name}</span>
+            </label>
+          ))}
+        </fieldset>
+        <div className="production-form-footer"><span>Saving replaces the complete active assignment set and revokes mappings for removed locations.</span><SubmitButton>Save assignments</SubmitButton></div>
+      </form>
+      <ActionNotice state={assignmentState} />
+
+      <form action={discoveryAction} className="production-destructive-row">
+        <input type="hidden" name="connectionId" value={connection.id} />
+        <span>{latestRun ? `Latest discovery: ${latestRun.status}${latestRun.completed_at ? ` · ${new Date(latestRun.completed_at).toLocaleString()}` : ""}` : "No business-unit discovery has been requested."}</span>
+        <SubmitButton disabled={!canDiscover}>{canDiscover ? "Discover business units" : "Validation required"}</SubmitButton>
+      </form>
+      <ActionNotice state={discoveryState} />
+
+      {revision && units.length > 0 ? (
+        <form action={mappingAction} className="production-form-grid">
+          <input type="hidden" name="connectionId" value={connection.id} />
+          <input type="hidden" name="discoveryRevision" value={revision} />
+          <input type="hidden" name="confirmMappings" value="yes" />
+          <div className="production-record-list">
+            {units.map((unit) => {
+              const mapping = mappingByProviderId.get(unit.provider_business_unit_id);
+              return (
+                <div key={unit.provider_business_unit_id}>
+                  <input type="hidden" name="providerBusinessUnitId" value={unit.provider_business_unit_id} />
+                  <strong>{unit.name}</strong>
+                  <label>Location<select name="mappedLocationId" defaultValue={mapping?.location_id ?? ""}><option value="">Not mapped</option>{assignedLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
+                  <label>Trade<select name="trade" defaultValue={mapping?.trade ?? ""}><option value="">Not mapped</option><option value="hvac">HVAC</option><option value="plumbing">Plumbing</option><option value="electrical">Electrical</option><option value="other">Other</option></select></label>
+                </div>
+              );
+            })}
+          </div>
+          <div className="production-form-footer"><span>Unmapped rows remain visible. Saving replaces every current mapping at revision {revision.slice(0, 8)}.</span><SubmitButton>Save mappings</SubmitButton></div>
+        </form>
+      ) : <div className="production-empty">Run the trusted discovery worker after validation to load the current ServiceTitan business-unit inventory.</div>}
+      <ActionNotice state={mappingState} />
+    </section>
+  );
+}
+
+function OriginalKpiCatalogManager({ tenant }: { tenant: ProductionTenantContext }) {
+  const admin = tenant.adminConfiguration;
+  const [state, action] = useActionState(activateOriginalKpiCatalogAction, INITIAL_ADMIN_ACTION_STATE);
+  if (!admin) return <div className="production-empty">The governed KPI catalog could not be loaded.</div>;
+  const enabled = new Set(admin.originalKpiDefinitions.filter((definition) => definition.lifecycle === "published").map((definition) => definition.kpi_key));
+  const inactive = admin.originalKpiCatalog.filter((item) => !enabled.has(item.kpi_key));
+  const sections = ["executive", "revenue", "calls", "appointments", "sales", "membership"] as const;
+  return (
+    <section className="production-section">
+      <div className="production-section-title"><div><span>Migration-owned catalog v1</span><h2>Original 36 KPI library</h2></div><strong>{enabled.size}/36 enabled</strong></div>
+      <p>Activation publishes definitions only. Sources, location bindings, targets, and observations remain unavailable until separately configured and reconciled.</p>
+      <form action={action} className="production-form-grid">
+        <input type="hidden" name="selectionMode" value="selected" />
+        <input type="hidden" name="confirmActivation" value="yes" />
+        {sections.map((section) => {
+          const items = admin.originalKpiCatalog.filter((item) => item.section === section);
+          return <fieldset key={section}><legend>{section}</legend>{items.map((item) => <label key={item.kpi_key} className="production-checkbox-row"><input type="checkbox" name="kpiKey" value={item.kpi_key} disabled={enabled.has(item.kpi_key)} /><span><strong>{item.title}</strong><small>{enabled.has(item.kpi_key) ? "Enabled" : `${item.source_system} · ${item.subtitle}`}</small></span></label>)}</fieldset>;
+        })}
+        <div className="production-form-footer"><span>{inactive.length} catalog definition{inactive.length === 1 ? "" : "s"} remain inactive.</span><SubmitButton>Enable selected KPIs</SubmitButton></div>
+      </form>
+      <ActionNotice state={state} />
+      {inactive.length > 0 ? <form action={action} className="production-destructive-row"><input type="hidden" name="selectionMode" value="all" /><input type="hidden" name="confirmActivation" value="yes" /><span>Publish every missing original definition in one idempotent transaction.</span><SubmitButton>Enable all 36</SubmitButton></form> : null}
+    </section>
+  );
+}
+
 export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTenantContext; mode: "staging" | "production" }) {
   const [section, setSection] = useState<ProductionAdminSection>("overview");
   const selectedSection = PRODUCTION_ADMIN_SECTIONS.find((item) => item.id === section) ?? PRODUCTION_ADMIN_SECTIONS[0];
@@ -365,13 +465,13 @@ export function ProductionAdminConsole({ tenant, mode }: { tenant: ProductionTen
                 <section className="production-section">
                   <div className="production-section-title"><div><span>Database records</span><h2>ServiceTitan connections</h2></div><strong>{tenant.connections.length}</strong></div>
                   <div className="production-record-list">
-                    {tenant.connections.length ? tenant.connections.map((connection) => <ConnectionRecord key={connection.id} connection={connection} assignments={tenant.assignments} locations={tenant.locations} />) : <div className="production-empty">No ServiceTitan connection metadata has been persisted for this tenant.</div>}
+                    {tenant.connections.length ? tenant.connections.map((connection) => <div key={connection.id}><ConnectionRecord connection={connection} assignments={tenant.assignments} locations={tenant.locations} /><ServiceTitanConfiguration tenant={tenant} connection={connection} /></div>) : <div className="production-empty">No ServiceTitan connection metadata has been persisted for this tenant.</div>}
                   </div>
                 </section>
               </>
             ) : null}
 
-            {section === "kpis" ? <DeferredAdminSection title="KPI Library" description="The original KPI wizard was browser-local and could not safely publish tenant configuration. The production database already governs definitions, versions, location bindings, observations, and approval state; the production editor is the remaining layer." supported={["Versioned custom KPI definitions", "Tenant- and location-bound KPI mappings", `${tenant.kpis.length} currently materialized production KPI binding${tenant.kpis.length === 1 ? "" : "s"}`, "Append-only observations with confidence and freshness"]} nextStep="Add audited draft, validate, publish, and archive actions; then bind the first LEX metric to its reconciled ServiceTitan source." /> : null}
+            {section === "kpis" ? <OriginalKpiCatalogManager tenant={tenant} /> : null}
             {section === "sources" ? <DeferredAdminSection title="Data Sources" description={readyConnections > 0 ? "ServiceTitan credentials are live and validated. The saved-report/source catalog from the original interface still needs production server actions before an administrator can safely create or publish a source here." : "No ServiceTitan connection has completed trusted worker validation yet. Validate a connection first; then restore the saved-report/source catalog through production server actions."} supported={[`${readyConnections} validated ServiceTitan connection${readyConnections === 1 ? "" : "s"}`, "Saved-report source registry and parameter contracts", "Sample, reconciliation, and publication evidence", "Revision-aware ingestion worker"]} nextStep="Expose the governed source registry, run a read-only report discovery, capture reconciliation evidence, and publish the first source binding." /> : null}
             {section === "targets" ? <DeferredAdminSection title="Targets & Budgets" description="The old target and budget screens saved configuration in the browser. Production has governed effective-dated KPI targets, but the monthly budget workflow still needs a first-class versioned model." supported={["Effective-dated KPI targets", "Location and organization scope", "Approval and audit foundations", "Target-aware production read model foundation"]} nextStep="Restore target administration first, then add a versioned monthly budget model with overlap protection and approval history." /> : null}
             {section === "layouts" ? <DeferredAdminSection title="Layouts & Access" description="The original role layouts and personal dashboard arrangements were local browser preferences. Production has layout tables and organization roles, but needs constrained self-service actions before those controls can return." supported={["Versioned layout templates", "Profile layout overrides", "Owner and administrator authorization", "Portfolio and tenant membership boundaries"]} nextStep="Add audited role-template actions, a user-owned profile-layout policy, and cross-device persistence before enabling drag, hide, and restore controls." /> : null}

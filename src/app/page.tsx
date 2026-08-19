@@ -7,6 +7,11 @@ import { isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
 import { getProductionTenantContext } from "@/lib/tenant-context";
 
+const PRODUCTION_KPI_SECTIONS = [
+  ["executive", "Executive"], ["revenue", "Revenue"], ["calls", "Calls & Digital"],
+  ["appointments", "Appointments"], ["sales", "Sales"], ["membership", "Membership"],
+] as const;
+
 function formatProductionValue(value: number | null, kind: "currency" | "number" | "percent" | "ratio") {
   if (value === null || !Number.isFinite(value)) return "Unavailable";
   if (kind === "currency") return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
@@ -90,21 +95,31 @@ export default async function Home() {
             </span>
           </div>
           {tenant.kpis.length === 0 ? (
-            <div className="production-empty">No approved KPI bindings are available. Demo values are never substituted.</div>
+            <div className="production-empty">The governed original KPI catalog is unavailable. Demo values are never substituted.</div>
           ) : (
-            <div className="production-kpi-grid">
-              {tenant.kpis.map((kpi) => (
-                <article className={`production-kpi-card ${kpi.health}`} key={kpi.bindingId}>
-                  <div><span>{kpi.locationName}</span><strong className={`production-status ${kpi.health === "current" ? "ready" : kpi.health}`}>{kpi.health}</strong></div>
-                  <h3>{kpi.title}</h3>
-                  <p>{formatProductionValue(kpi.value, kpi.valueKind)}</p>
-                  <small>
-                    {kpi.observedAt && kpi.periodEnd
-                      ? `Period ended ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(kpi.periodEnd))} UTC · observed ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(kpi.observedAt))} UTC · ${kpi.confidence} confidence`
-                      : "Awaiting the first governed ingestion observation"}
-                  </small>
-                </article>
-              ))}
+            <div>
+              {PRODUCTION_KPI_SECTIONS.map(([sectionKey, sectionLabel]) => {
+                const sectionKpis = tenant.kpis.filter((kpi) => kpi.section === sectionKey);
+                return (
+                  <section key={sectionKey} aria-labelledby={`kpi-section-${sectionKey}`}>
+                    <div className="production-panel-heading"><div><span>Original dashboard section</span><h3 id={`kpi-section-${sectionKey}`}>{sectionLabel}</h3></div><small>{sectionKpis.length} KPI{sectionKpis.length === 1 ? "" : "s"}</small></div>
+                    <div className="production-kpi-grid">
+                      {sectionKpis.map((kpi) => (
+                        <article className={`production-kpi-card ${kpi.health}`} key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`}>
+                          <div><span>{kpi.locationName}</span><strong className={`production-status ${kpi.health === "current" ? "ready" : kpi.health}`}>{kpi.health}</strong></div>
+                          <h3>{kpi.title}</h3>
+                          <p>{formatProductionValue(kpi.value, kpi.valueKind)}</p>
+                          <small>
+                            {kpi.observedAt && kpi.periodEnd
+                              ? `Period ended ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(kpi.periodEnd))} UTC · observed ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(kpi.observedAt))} UTC · ${kpi.confidence} confidence`
+                              : kpi.sourceStatus}
+                          </small>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           )}
         </section>

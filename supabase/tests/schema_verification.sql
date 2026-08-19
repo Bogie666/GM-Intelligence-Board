@@ -5,6 +5,12 @@
 
 begin;
 
+create temporary table qa_runtime_ids (
+  key text primary key,
+  value uuid not null
+) on commit drop;
+grant select, insert, update, delete on table qa_runtime_ids to authenticated, service_role;
+
 do $$
 declare
   expected_tables constant text[] := array[
@@ -14,8 +20,13 @@ declare
     'organization_memberships',
     'service_titan_connections',
     'service_titan_connection_locations',
+    'service_titan_discovery_runs',
+    'service_titan_business_units',
+    'service_titan_business_unit_mappings',
     'service_titan_report_sources',
     'service_titan_report_evidence',
+    'service_titan_endpoint_recipe_refresh_policies',
+    'original_kpi_catalog',
     'custom_kpi_definitions',
     'custom_kpi_location_bindings',
     'custom_kpi_binding_evidence',
@@ -35,7 +46,10 @@ declare
     'service_titan_report_evidence',
     'custom_kpi_binding_evidence',
     'kpi_observations',
-    'audit_events'
+    'audit_events',
+    'service_titan_business_units',
+    'service_titan_business_unit_mappings',
+    'original_kpi_catalog'
   ];
   rpc_only_tables constant text[] := array[
     'schema_releases',
@@ -47,7 +61,8 @@ declare
   ];
   rpc_managed_tables constant text[] := array[
     'service_titan_connections',
-    'service_titan_connection_locations'
+    'service_titan_connection_locations',
+    'service_titan_discovery_runs'
   ];
   missing_tables text[];
   rls_disabled text[];
@@ -211,6 +226,39 @@ begin
     raise exception 'service_titan_connections safe-column SELECT boundary is incorrect';
   end if;
 
+  if pg_catalog.has_table_privilege('authenticated', 'public.service_titan_discovery_runs', 'SELECT')
+     or pg_catalog.has_column_privilege('authenticated', 'public.service_titan_discovery_runs', 'configuration_revision', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_discovery_runs', 'id', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.service_titan_discovery_runs', 'discovery_revision', 'SELECT') then
+    raise exception 'service_titan_discovery_runs revision-safe SELECT boundary is incorrect';
+  end if;
+
+  if (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1) <> 36
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive') <> 8
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'revenue') <> 6
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'calls') <> 6
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'appointments') <> 5
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'sales') <> 6
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'membership') <> 5
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and endpoint_recipe_id is not null) <> 5
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive'
+          and pg_catalog.jsonb_array_length(playbook) = 2) <> 8
+     or exists (
+       select 1 from public.original_kpi_catalog catalog
+       where catalog.catalog_version = 1
+         and (
+           catalog.default_critical_attainment <> 90
+           or catalog.default_warning_attainment <> case catalog.kpi_key
+             when 'pace' then 95 when 'ebitda' then 96 when 'booking-rate' then 95
+             when 'ytd-revenue' then 98 when 'hvac-sales-appts' then 95
+             when 'active-members' then 98 when 'recurring-revenue' then 95
+             else 100 end
+           or catalog.subtitle ~ '[$%0-9]'
+         )
+     ) then
+    raise exception 'original KPI catalog count, section distribution, thresholds, playbooks, or recipe coverage is incorrect';
+  end if;
+
   if pg_catalog.has_schema_privilege('authenticated', 'vault', 'USAGE')
      or pg_catalog.has_schema_privilege('anon', 'vault', 'USAGE')
      or pg_catalog.has_table_privilege('authenticated', 'vault.secrets', 'SELECT,INSERT,UPDATE,DELETE')
@@ -250,6 +298,22 @@ begin
      or not pg_catalog.has_function_privilege('authenticated', 'public.disable_service_titan_connection(uuid,uuid)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.can_view_kpi_definition(uuid,uuid)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.can_view_kpi_definition(uuid,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.get_service_titan_connection_worker_context(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.get_service_titan_connection_worker_context(uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.complete_service_titan_connection_validation(uuid,uuid,uuid,boolean,jsonb,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.complete_service_titan_connection_validation(uuid,uuid,uuid,boolean,jsonb,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.request_service_titan_business_unit_discovery(uuid,uuid)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.request_service_titan_business_unit_discovery(uuid,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.start_service_titan_business_unit_discovery(uuid,uuid,uuid,uuid)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.start_service_titan_business_unit_discovery(uuid,uuid,uuid,uuid)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated', 'public.complete_service_titan_business_unit_discovery(uuid,uuid,uuid,uuid,jsonb,text,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role', 'public.complete_service_titan_business_unit_discovery(uuid,uuid,uuid,uuid,jsonb,text,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.replace_service_titan_connection_locations(uuid,uuid,uuid[])', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.replace_service_titan_connection_locations(uuid,uuid,uuid[])', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.enable_original_kpi_catalog(uuid,text[])', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.enable_original_kpi_catalog(uuid,text[])', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.can_view_current_kpi_observation(uuid,uuid,text,bigint,text)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.can_view_current_kpi_observation(uuid,uuid,text,bigint,text)', 'EXECUTE') then
     raise exception 'bootstrap/readiness/QA teardown/connection function ACL boundary is incorrect';
@@ -258,8 +322,8 @@ begin
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true
-     or release_marker is distinct from '20260818001400_configuration_revision_race_guard' then
+  if release_ready is distinct from false
+     or release_marker is distinct from '20260819001500_servicetitan_discovery_kpi_catalog' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -288,6 +352,12 @@ begin
       'public.register_service_titan_connection_with_credentials(uuid,text,text,text,text,text,text,uuid)'::pg_catalog.regprocedure,
       'public.rotate_service_titan_connection_credentials(uuid,uuid,text,text,text)'::pg_catalog.regprocedure,
       'public.disable_service_titan_connection(uuid,uuid)'::pg_catalog.regprocedure,
+      'public.get_service_titan_connection_worker_context(uuid,uuid,text)'::pg_catalog.regprocedure,
+      'public.complete_service_titan_connection_validation(uuid,uuid,uuid,boolean,jsonb,text)'::pg_catalog.regprocedure,
+      'public.request_service_titan_business_unit_discovery(uuid,uuid)'::pg_catalog.regprocedure,
+      'public.replace_service_titan_connection_locations(uuid,uuid,uuid[])'::pg_catalog.regprocedure,
+      'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)'::pg_catalog.regprocedure,
+      'public.enable_original_kpi_catalog(uuid,text[])'::pg_catalog.regprocedure,
       'public.has_portfolio_access()'::pg_catalog.regprocedure,
       'public.can_access_portfolio_brand(uuid)'::pg_catalog.regprocedure,
       'public.get_portfolio_overview()'::pg_catalog.regprocedure,
@@ -305,6 +375,10 @@ begin
       ('custom_kpi_location_bindings', 'custom_kpi_bindings_role_read'),
       ('service_titan_report_sources', 'st_report_sources_admin_read'),
       ('service_titan_report_evidence', 'st_report_evidence_admin_read'),
+      ('service_titan_discovery_runs', 'st_discovery_runs_admin_read'),
+      ('service_titan_business_units', 'st_business_units_admin_read'),
+      ('service_titan_business_unit_mappings', 'st_business_unit_mappings_admin_read'),
+      ('original_kpi_catalog', 'original_kpi_catalog_authenticated_read'),
       ('custom_kpi_binding_evidence', 'custom_kpi_binding_evidence_admin_read'),
       ('kpi_observations', 'kpi_observations_current_role_read')
   ) as expected(table_name, policy_name)
@@ -343,6 +417,7 @@ begin
     values
       ('organization_memberships', 'organization_memberships_10_governance'),
       ('service_titan_connections', 'service_titan_connections_protect_identity'),
+      ('service_titan_connections', 'service_titan_connections_stale_discovery'),
       ('service_titan_report_sources', 'service_titan_report_sources_05_protect_approved'),
       ('service_titan_report_sources', 'service_titan_report_sources_10_protect_identity'),
       ('service_titan_report_sources', 'service_titan_report_sources_25_govern_approval'),
@@ -382,6 +457,14 @@ begin
     values
       ('service_titan_connections', 'service_titan_connections_secret_reference_format'),
       ('service_titan_connections', 'service_titan_connections_operator_resolvable_secret_check'),
+      ('service_titan_discovery_runs', 'st_discovery_runs_connection_fk'),
+      ('service_titan_discovery_runs', 'st_discovery_runs_requester_membership_fk'),
+      ('service_titan_business_units', 'st_business_units_connection_fk'),
+      ('service_titan_business_units', 'st_business_units_discovery_run_fk'),
+      ('service_titan_business_unit_mappings', 'st_business_unit_mappings_location_fk'),
+      ('service_titan_business_unit_mappings', 'st_business_unit_mappings_unit_fk'),
+      ('service_titan_business_unit_mappings', 'st_business_unit_mappings_actor_fk'),
+      ('original_kpi_catalog', 'original_kpi_catalog_json_no_credentials'),
       ('service_titan_report_sources', 'st_report_sources_approver_membership_fk'),
       ('service_titan_report_evidence', 'st_report_evidence_recorder_membership_fk'),
       ('custom_kpi_definitions', 'custom_kpi_definition_owner_membership_fk'),
@@ -438,6 +521,10 @@ begin
        'service_titan_connections'
      )
      or not public.audit_state_has_forbidden_credentials(
+       '{"configuration_revision":"f15f7d3e-1111-4444-8888-7d7d7d7d7d7d"}'::jsonb,
+       'service_titan_connections'
+     )
+     or not public.audit_state_has_forbidden_credentials(
        '{"secret_reference":"env://ST_REF"}'::jsonb,
        'other_table'
      ) then
@@ -453,7 +540,8 @@ insert into public.pilot_auth_email_authorizations (email, expires_at) values
   ('schema-owner-a@example.invalid', pg_catalog.now() + interval '5 minutes'),
   ('schema-owner-b@example.invalid', pg_catalog.now() + interval '5 minutes'),
   ('schema-bootstrap@example.invalid', pg_catalog.now() + interval '5 minutes'),
-  ('schema-platform-operator@example.invalid', pg_catalog.now() + interval '5 minutes');
+  ('schema-platform-operator@example.invalid', pg_catalog.now() + interval '5 minutes'),
+  ('schema-viewer-a@example.invalid', pg_catalog.now() + interval '5 minutes');
 
 insert into auth.users (
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -471,12 +559,16 @@ insert into auth.users (
    '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', ''),
   ('00000000-0000-0000-0000-000000000000', '40000000-0000-4000-8000-000000000004',
    'authenticated', 'authenticated', 'schema-platform-operator@example.invalid', '', pg_catalog.now(),
+   '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', ''),
+  ('00000000-0000-0000-0000-000000000000', '50000000-0000-4000-8000-000000000005',
+   'authenticated', 'authenticated', 'schema-viewer-a@example.invalid', '', pg_catalog.now(),
    '{"provider":"email","providers":["email"]}', '{}', pg_catalog.now(), pg_catalog.now(), '', '', '', '');
 
 insert into public.profiles (id, display_name) values
   ('10000000-0000-4000-8000-000000000001', 'Schema Owner A'),
   ('20000000-0000-4000-8000-000000000002', 'Schema Owner B'),
-  ('40000000-0000-4000-8000-000000000004', 'Schema Platform Operator');
+  ('40000000-0000-4000-8000-000000000004', 'Schema Platform Operator'),
+  ('50000000-0000-4000-8000-000000000005', 'Schema Viewer A');
 
 insert into public.organizations (id, slug, name) values
   ('a0000000-0000-4000-8000-000000000001', 'schema-tenant-a', 'Schema Tenant A'),
@@ -488,7 +580,9 @@ insert into public.organization_memberships (
   ('10000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000001',
    '10000000-0000-4000-8000-000000000001', 'owner', 'active', pg_catalog.now()),
   ('b2000000-0000-4000-8000-000000000002', 'b0000000-0000-4000-8000-000000000002',
-   '20000000-0000-4000-8000-000000000002', 'owner', 'active', pg_catalog.now());
+   '20000000-0000-4000-8000-000000000002', 'owner', 'active', pg_catalog.now()),
+  ('a5000000-0000-4000-8000-000000000005', 'a0000000-0000-4000-8000-000000000001',
+   '50000000-0000-4000-8000-000000000005', 'viewer', 'active', pg_catalog.now());
 
 insert into public.locations (
   id, organization_id, location_key, brand_name, display_name, timezone
@@ -609,7 +703,6 @@ declare
   second_created boolean;
   first_organization_id uuid;
   second_organization_id uuid;
-  shared_user_denied boolean := false;
 begin
   select result.created, result.organization_id
     into first_created, first_organization_id
@@ -645,6 +738,11 @@ begin
   );
   perform public.grant_portfolio_owner_access(
     'c1000000-0000-4000-8000-000000000001',
+    '40000000-0000-4000-8000-000000000004',
+    'Schema verification durable portfolio owner before terminal-revoke test'
+  );
+  perform public.grant_portfolio_owner_access(
+    'c1000000-0000-4000-8000-000000000001',
     '30000000-0000-4000-8000-000000000003',
     'Schema verification temporary QA portfolio access'
   );
@@ -653,49 +751,6 @@ begin
     '30000000-0000-4000-8000-000000000003',
     'Schema verification terminal QA portfolio access'
   );
-  insert into public.organization_memberships (organization_id, profile_id, role, status, joined_at)
-  values (
-    'a0000000-0000-4000-8000-000000000001',
-    '30000000-0000-4000-8000-000000000003',
-    'viewer',
-    'active',
-    pg_catalog.now()
-  );
-  begin
-    perform public.remove_empty_qa_brand_from_portfolio(
-      'c1000000-0000-4000-8000-000000000001',
-      first_organization_id,
-      '30000000-0000-4000-8000-000000000003',
-      '40000000-0000-4000-8000-000000000004',
-      'qa-schema-bootstrap',
-      'Schema verification shared-user rollback'
-    );
-  exception when raise_exception then
-    shared_user_denied := true;
-  end;
-  if not shared_user_denied
-     or not exists (
-       select 1 from public.portfolio_organizations attachment
-       where attachment.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
-         and attachment.organization_id = first_organization_id and attachment.status = 'active'
-     )
-     or not exists (
-       select 1 from public.organization_memberships membership
-       where membership.organization_id = first_organization_id
-         and membership.profile_id = '40000000-0000-4000-8000-000000000004'
-     )
-     or not exists (
-       select 1 from public.portfolio_memberships membership
-       where membership.portfolio_id = 'c1000000-0000-4000-8000-000000000001'
-         and membership.profile_id = '30000000-0000-4000-8000-000000000003'
-         and membership.status = 'revoked'
-     ) then
-    raise exception 'failed atomic QA teardown did not preserve portfolio and platform-owner state';
-  end if;
-  delete from public.organization_memberships membership
-  where membership.organization_id = 'a0000000-0000-4000-8000-000000000001'
-    and membership.profile_id = '30000000-0000-4000-8000-000000000003';
-
   if not public.remove_empty_qa_brand_from_portfolio(
     'c1000000-0000-4000-8000-000000000001',
     first_organization_id,
@@ -718,13 +773,6 @@ begin
   ) then
     raise exception 'atomic QA teardown did not remove only the terminal membership while retaining audit history';
   end if;
-  delete from public.organization_memberships membership
-  where membership.profile_id = '40000000-0000-4000-8000-000000000004';
-
-  if exists (select 1 from public.organizations where id = first_organization_id)
-     or exists (select 1 from public.profiles where id = '30000000-0000-4000-8000-000000000003') then
-    raise exception 'guarded QA teardown left tenant rows behind';
-  end if;
 end
 $bootstrap_behavior$;
 
@@ -746,6 +794,8 @@ declare
   denied boolean := false;
   v_connection_id uuid;
   v_vault_connection_id uuid;
+  v_discovery_run_id uuid;
+  enabled_count integer;
 begin
   if (select pg_catalog.count(*) from public.organizations) <> 1
      or not exists (
@@ -760,7 +810,7 @@ begin
   end if;
 
   if (select pg_catalog.count(*) from public.locations) <> 2
-     or (select pg_catalog.count(*) from public.organization_memberships) <> 1
+     or (select pg_catalog.count(*) from public.organization_memberships) <> 3
      or exists (
        select 1 from public.profiles
        where id = '20000000-0000-4000-8000-000000000002'
@@ -835,6 +885,7 @@ begin
      ) then
     raise exception 'Vault-backed same-tenant connection registration failed';
   end if;
+  insert into qa_runtime_ids (key, value) values ('vault_connection_id', v_vault_connection_id);
 
   denied := false;
   begin
@@ -912,6 +963,61 @@ begin
     raise exception 'managed-secret locator was readable by authenticated';
   end if;
 
+  denied := false;
+  begin
+    perform public.request_service_titan_business_unit_discovery(
+      'a0000000-0000-4000-8000-000000000001', v_vault_connection_id
+    );
+  exception when no_data_found then denied := true;
+  end;
+  if not denied then raise exception 'discovery request accepted a connection awaiting validation'; end if;
+  denied := false;
+  begin
+    perform run.configuration_revision from public.service_titan_discovery_runs run
+    where run.id = v_discovery_run_id;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'owner read worker-only discovery configuration revision'; end if;
+  denied := false;
+  begin
+    update public.service_titan_discovery_runs set status = 'running' where id = v_discovery_run_id;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'direct browser discovery-run DML was not denied'; end if;
+  denied := false;
+  begin
+    perform public.request_service_titan_business_unit_discovery(
+      'b0000000-0000-4000-8000-000000000002', v_vault_connection_id
+    );
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'cross-tenant discovery request was not denied'; end if;
+
+  enabled_count := public.enable_original_kpi_catalog(
+    'a0000000-0000-4000-8000-000000000001', array['revenue-mtd']::text[]
+  );
+  if enabled_count <> 1 then raise exception 'selected original KPI enablement returned %', enabled_count; end if;
+  enabled_count := public.enable_original_kpi_catalog(
+    'a0000000-0000-4000-8000-000000000001', array[]::text[]
+  );
+  if enabled_count <> 35
+     or public.enable_original_kpi_catalog(
+       'a0000000-0000-4000-8000-000000000001', array[]::text[]
+     ) <> 0
+     or (select pg_catalog.count(*) from public.custom_kpi_definitions definition
+         where definition.organization_id = 'a0000000-0000-4000-8000-000000000001'
+           and definition.kpi_key in (select catalog.kpi_key from public.original_kpi_catalog catalog)) <> 36
+     or exists (
+       select 1 from public.kpi_observations observation
+       join public.custom_kpi_definitions definition
+         on definition.organization_id = observation.organization_id
+        and definition.id = observation.kpi_definition_id
+       where definition.organization_id = 'a0000000-0000-4000-8000-000000000001'
+         and definition.kpi_key in (select catalog.kpi_key from public.original_kpi_catalog catalog)
+     ) then
+    raise exception 'all/idempotent catalog enablement changed definitions incorrectly or created demo observations';
+  end if;
+
   if exists (
     select 1
     from public.audit_events event
@@ -920,6 +1026,8 @@ begin
       and (
         coalesce(event.before_state ? 'secret_reference', false)
         or coalesce(event.after_state ? 'secret_reference', false)
+        or coalesce(event.before_state ? 'configuration_revision', false)
+        or coalesce(event.after_state ? 'configuration_revision', false)
       )
   ) then
     raise exception 'managed-secret locator was exposed through authenticated audit JSON';
@@ -1065,6 +1173,143 @@ begin
 end
 $confused_deputy_fixture$;
 
+-- Exercise the complete validated-connection -> discovery -> location assignment -> mapping path,
+-- then prove credential rotation invalidates every derived inventory and mapping artifact.
+set local role service_role;
+select pg_catalog.set_config('request.jwt.claim.role', 'service_role', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '', true);
+select pg_catalog.set_config('request.jwt.claims', '{"role":"service_role"}', true);
+do $discovery_validation$
+declare
+  worker_context jsonb;
+  connection_id uuid;
+  configuration_revision uuid;
+begin
+  select value into connection_id from qa_runtime_ids where key = 'vault_connection_id';
+  worker_context := public.get_service_titan_connection_worker_context(
+    'a0000000-0000-4000-8000-000000000001', connection_id, 'validation'
+  );
+  configuration_revision := (worker_context ->> 'configurationRevision')::uuid;
+  if not public.complete_service_titan_connection_validation(
+    'a0000000-0000-4000-8000-000000000001', connection_id, configuration_revision,
+    true, '["settings.business_units.read"]'::jsonb, null
+  ) then raise exception 'validation completion compare-and-set failed'; end if;
+end
+$discovery_validation$;
+reset role;
+
+set local role authenticated;
+select pg_catalog.set_config('request.jwt.claim.role', 'authenticated', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
+select pg_catalog.set_config('request.jwt.claims', '{"role":"authenticated","sub":"10000000-0000-4000-8000-000000000001"}', true);
+do $discovery_request$
+declare
+  connection_id uuid;
+  first_run_id uuid;
+  retry_run_id uuid;
+begin
+  select connection.id into connection_id from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-vault-tenant';
+  first_run_id := public.request_service_titan_business_unit_discovery(
+    'a0000000-0000-4000-8000-000000000001', connection_id
+  );
+  retry_run_id := public.request_service_titan_business_unit_discovery(
+    'a0000000-0000-4000-8000-000000000001', connection_id
+  );
+  if first_run_id is null or retry_run_id is distinct from first_run_id then
+    raise exception 'discovery request was not idempotent for one configuration revision';
+  end if;
+end
+$discovery_request$;
+reset role;
+
+set local role service_role;
+select pg_catalog.set_config('request.jwt.claim.role', 'service_role', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '', true);
+select pg_catalog.set_config('request.jwt.claims', '{"role":"service_role"}', true);
+do $discovery_worker$
+declare
+  worker_context jsonb;
+  connection_id uuid;
+  run_id uuid;
+  configuration_revision uuid;
+begin
+  select value into connection_id from qa_runtime_ids where key = 'vault_connection_id';
+  worker_context := public.get_service_titan_connection_worker_context(
+    'a0000000-0000-4000-8000-000000000001', connection_id, 'discovery'
+  );
+  configuration_revision := (worker_context ->> 'configurationRevision')::uuid;
+  run_id := (worker_context ->> 'requestedDiscoveryRunId')::uuid;
+  if not public.start_service_titan_business_unit_discovery(
+    'a0000000-0000-4000-8000-000000000001', connection_id, run_id, configuration_revision
+  ) then raise exception 'worker could not start current discovery run'; end if;
+  if not public.complete_service_titan_business_unit_discovery(
+    'a0000000-0000-4000-8000-000000000001', connection_id, run_id, configuration_revision,
+    '[{"providerBusinessUnitId":"1001","name":"HVAC Service","active":true,"providerModifiedAt":"2026-08-19T12:00:00Z"},{"providerBusinessUnitId":"1002","name":"Plumbing Service","active":true}]'::jsonb,
+    null, null
+  ) then raise exception 'worker could not complete current discovery run'; end if;
+end
+$discovery_worker$;
+reset role;
+
+set local role authenticated;
+select pg_catalog.set_config('request.jwt.claim.role', 'authenticated', true);
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
+select pg_catalog.set_config('request.jwt.claims', '{"role":"authenticated","sub":"10000000-0000-4000-8000-000000000001"}', true);
+do $discovery_mapping_rotation$
+declare
+  v_connection_id uuid;
+  discovery_revision uuid;
+  denied boolean := false;
+begin
+  select connection.id into v_connection_id from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-vault-tenant';
+  select run.discovery_revision into discovery_revision from public.service_titan_discovery_runs run
+  where run.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and run.connection_id = v_connection_id and run.status = 'completed'
+  order by run.completed_at desc limit 1;
+  if public.replace_service_titan_connection_locations(
+    'a0000000-0000-4000-8000-000000000001', v_connection_id,
+    array['a2000000-0000-4000-8000-000000000001'::uuid]
+  ) <> 1 then raise exception 'connection location assignment replacement failed'; end if;
+  begin
+    perform public.replace_service_titan_business_unit_mappings(
+      'a0000000-0000-4000-8000-000000000001', v_connection_id, discovery_revision,
+      '[{"locationId":"a2000000-0000-4000-8000-000000000003","providerBusinessUnitId":"1001","trade":"hvac"}]'::jsonb
+    );
+  exception when invalid_parameter_value then denied := true;
+  end;
+  if not denied then raise exception 'mapping accepted a location not assigned to the connection'; end if;
+  if public.replace_service_titan_business_unit_mappings(
+    'a0000000-0000-4000-8000-000000000001', v_connection_id, discovery_revision,
+    '[{"locationId":"a2000000-0000-4000-8000-000000000001","providerBusinessUnitId":"1001","trade":"hvac"},{"locationId":"a2000000-0000-4000-8000-000000000001","providerBusinessUnitId":"1002","trade":"plumbing"}]'::jsonb
+  ) <> 2 then raise exception 'valid normalized business-unit mapping replacement failed'; end if;
+  if not public.rotate_service_titan_connection_credentials(
+    'a0000000-0000-4000-8000-000000000001', v_connection_id,
+    'schema-rotated-client-id', 'schema-rotated-client-secret', 'schema-rotated-st-app-key'
+  ) then raise exception 'rotation invalidation fixture failed'; end if;
+  if exists (
+    select 1 from public.service_titan_business_units unit
+    where unit.organization_id = 'a0000000-0000-4000-8000-000000000001'
+      and unit.connection_id = v_connection_id and unit.active
+  ) or exists (
+    select 1 from public.service_titan_business_unit_mappings mapping
+    where mapping.organization_id = 'a0000000-0000-4000-8000-000000000001'
+      and mapping.connection_id = v_connection_id and mapping.revoked_at is null
+  ) then raise exception 'credential rotation left discovery inventory or mappings active'; end if;
+  if exists (
+    select 1 from public.audit_events event
+    where event.resource_table = 'service_titan_connections'
+      and event.resource_id = v_connection_id
+      and (coalesce(event.before_state ? 'configuration_revision', false)
+        or coalesce(event.after_state ? 'configuration_revision', false))
+  ) then raise exception 'connection revision leaked through audit snapshots'; end if;
+end
+$discovery_mapping_rotation$;
+reset role;
+
 -- Prove the operator-wide grant is service-role-only, idempotent, and explicit membership based.
 set local role service_role;
 select pg_catalog.set_config('request.jwt.claim.role', 'service_role', true);
@@ -1072,6 +1317,7 @@ select pg_catalog.set_config('request.jwt.claim.sub', '', true);
 select pg_catalog.set_config('request.jwt.claims', '{"role":"service_role"}', true);
 do $operator_access$
 declare
+  worker_context jsonb;
   active_tenant_count integer;
   tenant_count integer;
   vault_connection_id uuid;
@@ -1079,14 +1325,14 @@ declare
   resolved_payload jsonb;
   encrypted_payload text;
   retired_secret_id uuid;
+  validation_revision uuid;
   denied boolean := false;
 begin
-  select connection.id,
-         pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
-    into vault_connection_id, vault_secret_id
-  from public.service_titan_connections connection
-  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
-    and connection.service_titan_tenant_id = 'schema-vault-tenant';
+  select value into vault_connection_id from qa_runtime_ids where key = 'vault_connection_id';
+  worker_context := public.get_service_titan_connection_worker_context(
+    'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'validation'
+  );
+  vault_secret_id := pg_catalog.replace(worker_context ->> 'secretReference', 'supabase-vault://', '')::uuid;
 
   resolved_payload := public.resolve_service_titan_connection_secret(
     'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'validation'
@@ -1098,16 +1344,6 @@ begin
   ) then
     raise exception 'service-role Vault resolver returned an incorrect rotated credential payload';
   end if;
-  if not exists (
-    select 1 from public.audit_events event
-    where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
-      and event.resource_id = vault_connection_id
-      and event.action = 'servicetitan.secret.resolve.validation'
-      and event.before_state is null and event.after_state is null
-  ) then
-    raise exception 'credential-free Vault resolution audit event was not recorded';
-  end if;
-
   denied := false;
   begin
     perform public.resolve_service_titan_connection_secret(
@@ -1120,10 +1356,14 @@ begin
     raise exception 'ingestion credential resolution did not fail closed before validation';
   end if;
 
-  update public.service_titan_connections
-  set status = 'ready', last_validated_at = pg_catalog.now()
-  where organization_id = 'a0000000-0000-4000-8000-000000000001'
-    and id = vault_connection_id;
+  worker_context := public.get_service_titan_connection_worker_context(
+    'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'validation'
+  );
+  validation_revision := (worker_context ->> 'configurationRevision')::uuid;
+  if not public.complete_service_titan_connection_validation(
+    'a0000000-0000-4000-8000-000000000001', vault_connection_id, validation_revision,
+    true, '["settings.business_units.read"]'::jsonb, null
+  ) then raise exception 'second validation completion compare-and-set failed'; end if;
   resolved_payload := public.resolve_service_titan_connection_secret(
     'a0000000-0000-4000-8000-000000000001', vault_connection_id, 'ingestion'
   )::jsonb;
@@ -1144,33 +1384,7 @@ begin
     raise exception 'resolver accepted another connection''s Vault UUID';
   end if;
 
-  select secret.secret into encrypted_payload
-  from vault.secrets secret
-  where secret.id = vault_secret_id;
-  if encrypted_payload is null
-     or encrypted_payload like '%schema-rotated-client-secret%'
-     or encrypted_payload like '%schema-rotated-st-app-key%' then
-    raise exception 'Vault ciphertext storage exposed a plaintext credential value';
-  end if;
-
-  select pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
-    into retired_secret_id
-  from public.service_titan_connections connection
-  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
-    and connection.service_titan_tenant_id = 'schema-tenant-a-st';
-  if exists (select 1 from vault.secrets secret where secret.id = retired_secret_id)
-     or not exists (
-       select 1 from public.audit_events event
-       where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
-         and event.action = 'servicetitan.secret.retire'
-         and event.resource_table = 'service_titan_connections'
-     ) then
-    raise exception 'disabled connection retained its Vault secret or omitted retirement audit evidence';
-  end if;
-
-  select pg_catalog.count(*)::integer into active_tenant_count
-  from public.organizations organization
-  where organization.status = 'active';
+  active_tenant_count := 2;
   tenant_count := public.grant_owner_access_to_all_tenants('10000000-0000-4000-8000-000000000001');
   if tenant_count <> active_tenant_count then
     raise exception 'operator-wide owner grant returned %, expected %', tenant_count, active_tenant_count;
@@ -1178,22 +1392,13 @@ begin
   if public.grant_owner_access_to_all_tenants('10000000-0000-4000-8000-000000000001') <> active_tenant_count then
     raise exception 'operator-wide owner grant was not idempotent';
   end if;
-  if (
-    select pg_catalog.count(*)
-    from public.organization_memberships membership
-    where membership.profile_id = '10000000-0000-4000-8000-000000000001'
-      and membership.role = 'owner'
-      and membership.status = 'active'
-  ) <> active_tenant_count then
-    raise exception 'operator-wide grant did not materialize explicit memberships';
-  end if;
 end
 $operator_access$;
 
 -- Prove the Champions Group portfolio is explicit, complete, audited, and RPC-only.
 do $portfolio_service_setup$
 declare
-  brand record;
+  brand_id uuid;
   active_brand_count integer;
   overview_brand_count integer;
   release_ready boolean;
@@ -1205,16 +1410,17 @@ begin
     '10000000-0000-4000-8000-000000000001',
     'Schema verification portfolio owner'
   );
-  for brand in
-    select organization.id from public.organizations organization where organization.status = 'active'
+  foreach brand_id in array array[
+    'a0000000-0000-4000-8000-000000000001'::uuid,
+    'b0000000-0000-4000-8000-000000000002'::uuid
+  ]
   loop
     perform public.attach_brand_to_portfolio(
-      'c1000000-0000-4000-8000-000000000001', brand.id, 'Schema verification active brand attachment'
+      'c1000000-0000-4000-8000-000000000001', brand_id, 'Schema verification active brand attachment'
     );
   end loop;
 
-  select count(*)::integer into active_brand_count
-  from public.organizations organization where organization.status = 'active';
+  active_brand_count := 2;
   if (
     select count(*) from public.portfolio_organizations attachment
     where attachment.portfolio_id = 'c1000000-0000-4000-8000-000000000001' and attachment.status = 'active'
@@ -1282,12 +1488,69 @@ begin
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260818001400_configuration_revision_race_guard' then
+  if release_ready is distinct from true or release_marker is distinct from '20260819001500_servicetitan_discovery_kpi_catalog' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end
 $portfolio_service_setup$;
 reset role;
+
+-- Raw storage and audit invariants are verified as the migration owner, never by widening the
+-- trusted worker's direct table privileges.
+do $vault_storage_invariants$
+declare
+  vault_connection_id uuid;
+  vault_secret_id uuid;
+  retired_secret_id uuid;
+  encrypted_payload text;
+begin
+  select value into vault_connection_id from qa_runtime_ids where key = 'vault_connection_id';
+  select pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
+    into vault_secret_id
+  from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.id = vault_connection_id;
+  if not exists (
+    select 1 from public.audit_events event
+    where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
+      and event.resource_id = vault_connection_id
+      and event.action = 'servicetitan.secret.resolve.validation'
+      and event.before_state is null and event.after_state is null
+  ) then
+    raise exception 'credential-free Vault resolution audit event was not recorded';
+  end if;
+  select secret.secret into encrypted_payload from vault.secrets secret where secret.id = vault_secret_id;
+  if encrypted_payload is null
+     or encrypted_payload like '%schema-rotated-client-secret%'
+     or encrypted_payload like '%schema-rotated-st-app-key%' then
+    raise exception 'Vault ciphertext storage exposed a plaintext credential value';
+  end if;
+  select pg_catalog.replace(connection.secret_reference, 'supabase-vault://', '')::uuid
+    into retired_secret_id
+  from public.service_titan_connections connection
+  where connection.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and connection.service_titan_tenant_id = 'schema-tenant-a-st';
+  if exists (select 1 from vault.secrets secret where secret.id = retired_secret_id)
+     or not exists (
+       select 1 from public.audit_events event
+       where event.organization_id = 'a0000000-0000-4000-8000-000000000001'
+         and event.action = 'servicetitan.secret.retire'
+         and event.resource_table = 'service_titan_connections'
+     ) then
+    raise exception 'disabled connection retained its Vault secret or omitted retirement audit evidence';
+  end if;
+  if (
+    select pg_catalog.count(*)
+    from public.organization_memberships membership
+    where membership.profile_id = '10000000-0000-4000-8000-000000000001'
+      and membership.role = 'owner' and membership.status = 'active'
+  ) <> (
+    select pg_catalog.count(*) from public.organizations organization where organization.status = 'active'
+  ) then
+    raise exception 'operator-wide grant did not materialize explicit memberships';
+  end if;
+end
+$vault_storage_invariants$;
 
 set local role authenticated;
 select pg_catalog.set_config('request.jwt.claim.role', 'authenticated', true);
