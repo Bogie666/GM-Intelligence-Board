@@ -49,6 +49,7 @@ declare
     'audit_events',
     'service_titan_business_units',
     'service_titan_business_unit_mappings',
+    'service_titan_endpoint_recipe_refresh_policies',
     'original_kpi_catalog'
   ];
   rpc_only_tables constant text[] := array[
@@ -323,7 +324,7 @@ begin
     into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_ready is distinct from false
-     or release_marker is distinct from '20260819001500_servicetitan_discovery_kpi_catalog' then
+     or release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
 
@@ -1488,7 +1489,7 @@ begin
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260819001500_servicetitan_discovery_kpi_catalog' then
+  if release_ready is distinct from true or release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end

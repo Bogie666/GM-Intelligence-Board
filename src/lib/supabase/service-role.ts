@@ -4,6 +4,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export interface ServiceRoleEnvironment {
   NEXT_PUBLIC_SUPABASE_URL?: string;
+  SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
 }
 
@@ -18,11 +19,14 @@ export function validateServiceRoleEnvironment(environment: ServiceRoleEnvironme
   url: string;
   serviceRoleKey: string;
 } {
-  const rawUrl = environment.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+  const rawUrl = environment.SUPABASE_URL?.trim() ?? "";
+  const publicRawUrl = environment.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
   const serviceRoleKey = environment.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
   let url: URL;
   try {
     url = new URL(rawUrl);
+    const publicUrl = new URL(publicRawUrl);
+    if (publicUrl.origin !== url.origin) throw new ServiceRoleConfigurationError();
   } catch {
     throw new ServiceRoleConfigurationError();
   }
@@ -52,6 +56,7 @@ export function validateServiceRoleEnvironment(environment: ServiceRoleEnvironme
 export function createServiceRoleSupabaseClient(
   environment: ServiceRoleEnvironment = {
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    SUPABASE_URL: process.env.SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
   },
   clientFactory: typeof createClient = createClient,

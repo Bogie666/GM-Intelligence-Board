@@ -18,20 +18,28 @@ import {
   createConnectionAction,
   createLocationAction,
   disableConnectionAction,
+  runBusinessUnitDiscoveryAction,
   replaceBusinessUnitMappingsAction,
   replaceConnectionLocationsAction,
-  requestBusinessUnitDiscoveryAction,
   rotateConnectionCredentialsAction,
   updateLocationAction,
   updateOrganizationAction,
+  validateServiceTitanConnectionAction,
   type AdminActionState,
+  type ServiceTitanExecutionActionState,
 } from "@/app/admin/actions";
 import { ProductionNavigation } from "@/components/production-navigation";
+import {
+  ProductionDataSourcesSettings,
+  ProductionLayoutsAccessSettings,
+  ProductionTargetsBudgetsSettings,
+} from "@/components/production-admin-settings";
 import {
   getAdminSetupMilestones,
   isProductionAdminSection,
   type ProductionAdminSection,
 } from "@/lib/admin-navigation";
+import type { ProductionAdminSettingsWorkspace } from "@/lib/production-admin-settings";
 import type {
   ProductionTenantContext,
   ServiceTitanAssignment,
@@ -40,6 +48,8 @@ import type {
 } from "@/lib/tenant-context";
 
 const INITIAL_ADMIN_ACTION_STATE: AdminActionState = { status: "idle", message: "" };
+const INITIAL_VALIDATION_STATE: ServiceTitanExecutionActionState = { status: "idle", message: "", operation: "validation", phase: "failed", retryable: false };
+const INITIAL_DISCOVERY_STATE: ServiceTitanExecutionActionState = { status: "idle", message: "", operation: "business_unit_discovery", phase: "failed", retryable: false };
 const ADMIN_SECTION_STORAGE_KEY = "gm-admin-section";
 
 const UNITED_STATES_TIMEZONES = [
@@ -56,16 +66,16 @@ const PRODUCTION_ADMIN_SECTIONS: Array<{
   id: ProductionAdminSection;
   label: string;
   shortLabel: string;
-  group: "Get started" | "Manage performance" | "Planned controls";
+  group: "Get started" | "Manage performance" | "Govern workspace";
   description: string;
 }> = [
   { id: "overview", label: "Setup overview", shortLabel: "Overview", group: "Get started", description: "See what is configured and continue from the next incomplete step." },
   { id: "organization", label: "Organization & locations", shortLabel: "Organization", group: "Get started", description: "Manage the organization name and the operating locations shown throughout the workspace." },
   { id: "connections", label: "ServiceTitan setup", shortLabel: "ServiceTitan", group: "Get started", description: "Add secure credentials, review validation, assign locations, and map business units." },
   { id: "kpis", label: "KPI library", shortLabel: "KPI library", group: "Manage performance", description: "Choose which standard KPI definitions are available to this organization." },
-  { id: "sources", label: "Data sources", shortLabel: "Data sources", group: "Planned controls", description: "Review the current boundary for report sources and reconciliation evidence." },
-  { id: "targets", label: "Targets & budgets", shortLabel: "Targets", group: "Planned controls", description: "Review what is available now and what still needs an administrative workflow." },
-  { id: "layouts", label: "Layouts & access", shortLabel: "Layouts", group: "Planned controls", description: "Review the current boundary for shared layouts and role-based administration." },
+  { id: "sources", label: "Data sources", shortLabel: "Data sources", group: "Manage performance", description: "Register governed report sources and bind published KPIs to exact locations." },
+  { id: "targets", label: "Targets & budgets", shortLabel: "Targets", group: "Manage performance", description: "Manage effective-dated performance targets and budget-tagged KPI plans." },
+  { id: "layouts", label: "Layouts & access", shortLabel: "Layouts", group: "Govern workspace", description: "Review access roles and select approved member dashboard layouts." },
 ];
 
 function formatStatus(value: string): string {
@@ -104,39 +114,6 @@ function usePersistedAdminSection(initialSection: ProductionAdminSection) {
   }, []);
 
   return [section, navigate] as const;
-}
-
-function DeferredAdminSection({
-  title,
-  description,
-  available,
-  nextStep,
-}: {
-  title: string;
-  description: string;
-  available: string[];
-  nextStep: string;
-}) {
-  return (
-    <section className="production-section production-deferred-section" aria-labelledby="deferred-section-title">
-      <div className="production-section-title">
-        <div><span>Current release</span><h2 id="deferred-section-title">{title}</h2></div>
-        <span className="production-availability-badge">View only</span>
-      </div>
-      <p className="production-deferred-description">{description}</p>
-      <div className="production-deferred-grid">
-        <div>
-          <span>Available foundations</span>
-          <ul>{available.map((item) => <li key={item}>{item}</li>)}</ul>
-        </div>
-        <div>
-          <span>Administrative controls not yet available</span>
-          <p>{nextStep}</p>
-          <p className="production-honesty-note">No changes can be made from this section in the current release.</p>
-        </div>
-      </div>
-    </section>
-  );
 }
 
 function TimezoneSelect({ defaultValue = "America/Chicago", ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
@@ -495,7 +472,8 @@ function ConnectionRecord({ connection, assignments, locations }: { connection: 
 
 function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionTenantContext; connection: ServiceTitanConnection }) {
   const admin = tenant.adminConfiguration;
-  const [discoveryState, discoveryAction] = useActionState(requestBusinessUnitDiscoveryAction, INITIAL_ADMIN_ACTION_STATE);
+  const [validationState, validationAction] = useActionState(validateServiceTitanConnectionAction, INITIAL_VALIDATION_STATE);
+  const [discoveryState, discoveryAction] = useActionState(runBusinessUnitDiscoveryAction, INITIAL_DISCOVERY_STATE);
   const [assignmentState, assignmentAction] = useActionState(replaceConnectionLocationsAction, INITIAL_ADMIN_ACTION_STATE);
   const [mappingState, mappingAction] = useActionState(replaceBusinessUnitMappingsAction, INITIAL_ADMIN_ACTION_STATE);
   if (!admin || connection.status === "disabled" || connection.status === "archived") return null;
@@ -512,6 +490,21 @@ function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionT
 
   return (
     <section className="production-connection-config" aria-label={`${connection.display_name} location and business unit setup`}>
+      <form action={validationAction} className="production-config-step">
+        <input type="hidden" name="connectionId" value={connection.id} />
+        <div className="production-config-step-heading">
+          <span aria-hidden="true">2</span>
+          <div><h3>Validate ServiceTitan access</h3><p>Securely verify OAuth credentials and read-only business-unit access.</p></div>
+          <b>{canDiscover ? "Ready" : "Required"}</b>
+        </div>
+        <div className="production-action-row">
+          <span>{connection.last_validated_at ? `Last validated ${new Date(connection.last_validated_at).toLocaleString()}` : "Credentials have not been validated."}</span>
+          <SubmitButton pendingLabel="Validating ServiceTitan…">{canDiscover ? "Revalidate connection" : "Validate connection"}</SubmitButton>
+        </div>
+        <p className="production-inline-guidance">Validation runs securely on the server. Credentials and provider responses are never returned to the browser.</p>
+        <ActionNotice state={validationState} />
+      </form>
+
       <form action={assignmentAction} className="production-config-step">
         <input type="hidden" name="connectionId" value={connection.id} />
         <input type="hidden" name="confirmReplacement" value="yes" />
@@ -546,14 +539,14 @@ function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionT
         <input type="hidden" name="connectionId" value={connection.id} />
         <div className="production-config-step-heading">
           <span aria-hidden="true">4</span>
-          <div><h3>Request business units</h3><p>Queue a read-only request for the current ServiceTitan business-unit list.</p></div>
+          <div><h3>Discover business units</h3><p>Run a secure read-only request and save the current ServiceTitan business-unit list.</p></div>
           <b>{latestRun ? formatStatus(latestRun.status) : "Not requested"}</b>
         </div>
         <div className="production-action-row">
-          <span>{latestRun ? `Latest request: ${formatStatus(latestRun.status)}${latestRun.completed_at ? ` · ${new Date(latestRun.completed_at).toLocaleString()}` : ""}` : "No request has been submitted for this connection."}</span>
-          <SubmitButton pendingLabel="Requesting business units…" disabled={!canDiscover}>{canDiscover ? "Request business units" : "Validation required"}</SubmitButton>
+          <span>{latestRun ? `Latest discovery: ${formatStatus(latestRun.status)}${latestRun.completed_at ? ` · ${new Date(latestRun.completed_at).toLocaleString()}` : ""}` : "Business-unit discovery has not been run."}</span>
+          <SubmitButton pendingLabel="Discovering business units…" disabled={!canDiscover}>{canDiscover ? (latestRun ? "Run discovery again" : "Discover business units") : "Validation required"}</SubmitButton>
         </div>
-        {!canDiscover ? <p className="production-inline-guidance">An authorized operator must validate ServiceTitan access before discovery can be requested.</p> : null}
+        {!canDiscover ? <p className="production-inline-guidance">Validate this connection first. Discovery becomes available immediately after successful validation.</p> : null}
         <ActionNotice state={discoveryState} />
       </form>
 
@@ -572,12 +565,12 @@ function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionT
               {units.map((unit) => {
                 const mapping = mappingByProviderId.get(unit.provider_business_unit_id);
                 return (
-                  <div key={unit.provider_business_unit_id} className="production-mapping-row">
+                  <fieldset key={unit.provider_business_unit_id} className="production-mapping-row">
                     <input type="hidden" name="providerBusinessUnitId" value={unit.provider_business_unit_id} />
-                    <strong>{unit.name}</strong>
+                    <legend>{unit.name}</legend>
                     <label>Location<select name="mappedLocationId" defaultValue={mapping?.location_id ?? ""}><option value="">Not mapped</option>{assignedLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
                     <label>Trade<select name="trade" defaultValue={mapping?.trade ?? ""}><option value="">Not mapped</option><option value="hvac">HVAC</option><option value="plumbing">Plumbing</option><option value="electrical">Electrical</option><option value="other">Other</option></select></label>
-                  </div>
+                  </fieldset>
                 );
               })}
             </div>
@@ -591,7 +584,7 @@ function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionT
               >Review mapping changes</ConfirmAction>
             </div>
           </>
-        ) : <div className="production-empty compact">Complete a business-unit request before mapping. Requests are processed by the trusted ServiceTitan worker outside this page.</div>}
+        ) : <div className="production-empty compact">Run business-unit discovery before mapping. Discovery executes securely from this page after validation.</div>}
         <ActionNotice state={mappingState} />
       </form>
     </section>
@@ -601,16 +594,19 @@ function ServiceTitanConfiguration({ tenant, connection }: { tenant: ProductionT
 function ServiceTitanProcess({ tenant }: { tenant: ProductionTenantContext }) {
   const admin = tenant.adminConfiguration;
   const enabledConnections = tenant.connections.filter((connection) => connection.status !== "disabled" && connection.status !== "archived");
-  const validated = enabledConnections.some((connection) => connection.status === "ready" && Boolean(connection.last_validated_at));
-  const assigned = tenant.readiness.assignedActiveLocationCount > 0;
-  const discovered = Boolean(admin?.businessUnits.some((unit) => unit.active));
-  const mapped = Boolean(admin?.businessUnitMappings.some((mapping) => mapping.revoked_at === null));
+  const progress = enabledConnections.map((connection) => {
+    const validated = connection.status === "ready" && Boolean(connection.last_validated_at);
+    const assigned = tenant.assignments.some((assignment) => assignment.connection_id === connection.id && assignment.revoked_at === null);
+    const discovered = Boolean(admin?.businessUnits.some((unit) => unit.connection_id === connection.id && unit.active));
+    const mapped = Boolean(admin?.businessUnitMappings.some((mapping) => mapping.connection_id === connection.id && mapping.revoked_at === null));
+    return { connection, validated, assigned, discovered, mapped, score: [true, validated, assigned, discovered, mapped].filter(Boolean).length };
+  }).sort((left, right) => right.score - left.score)[0];
   const stages = [
-    { number: 1, label: "Add credentials", detail: "Available below", complete: enabledConnections.length > 0 },
-    { number: 2, label: "Validate access", detail: "Completed by an authorized operator", complete: validated },
-    { number: 3, label: "Assign locations", detail: "Managed per connection", complete: assigned },
-    { number: 4, label: "Request business units", detail: "Available after validation", complete: discovered },
-    { number: 5, label: "Map business units", detail: "Managed from discovery results", complete: mapped },
+    { number: 1, label: "Add credentials", detail: progress ? progress.connection.display_name : "Available below", complete: Boolean(progress) },
+    { number: 2, label: "Validate access", detail: "Run securely from this page", complete: progress?.validated ?? false },
+    { number: 3, label: "Assign locations", detail: "Managed per connection", complete: progress?.assigned ?? false },
+    { number: 4, label: "Discover business units", detail: "Available after validation", complete: progress?.discovered ?? false },
+    { number: 5, label: "Map business units", detail: "Managed from discovery results", complete: progress?.mapped ?? false },
   ];
   return (
     <section className="production-section production-process" aria-labelledby="servicetitan-process-title">
@@ -619,12 +615,12 @@ function ServiceTitanProcess({ tenant }: { tenant: ProductionTenantContext }) {
         {stages.map((stage) => (
           <li key={stage.number} className={stage.complete ? "complete" : "incomplete"}>
             <span aria-hidden="true">{stage.complete ? "✓" : stage.number}</span>
-            <div><strong>{stage.label}</strong><small>{stage.detail}</small></div>
+            <div><strong>{stage.label}</strong><small>{stage.detail}</small><span className="sr-only">Status: {stage.complete ? "complete" : "not complete"}</span></div>
             <b>{stage.complete ? "Complete" : "Not complete"}</b>
           </li>
         ))}
       </ol>
-      <p className="production-process-note"><strong>About validation:</strong> this release displays the persisted validation result. It does not run the trusted validation worker from the browser.</p>
+      <p className="production-process-note"><strong>Secure by design:</strong> validation and discovery execute on the server. Credentials, access tokens, and raw provider responses never reach the browser.</p>
     </section>
   );
 }
@@ -704,9 +700,9 @@ function SetupOverview({ tenant, navigate }: { tenant: ProductionTenantContext; 
   const details = [
     { id: "locations", title: "Add an operating location", detail: tenant.readiness.activeLocationCount ? `${tenant.readiness.activeLocationCount} active location${tenant.readiness.activeLocationCount === 1 ? "" : "s"}` : "No active locations", section: "organization" as const },
     { id: "credentials", title: "Add ServiceTitan credentials", detail: tenant.readiness.enabledConnectionCount ? `${tenant.readiness.enabledConnectionCount} enabled connection${tenant.readiness.enabledConnectionCount === 1 ? "" : "s"}` : "No enabled connections", section: "connections" as const },
-    { id: "validation", title: "Validate ServiceTitan access", detail: tenant.readiness.hasValidatedConnection ? "A validated connection is ready" : "Waiting for authorized operator validation", section: "connections" as const },
+    { id: "validation", title: "Validate ServiceTitan access", detail: tenant.readiness.hasValidatedConnection ? "A validated connection is ready" : "Run secure validation from ServiceTitan setup", section: "connections" as const },
     { id: "assignments", title: "Assign locations", detail: tenant.readiness.assignedActiveLocationCount ? `${tenant.readiness.assignedActiveLocationCount} assigned active location${tenant.readiness.assignedActiveLocationCount === 1 ? "" : "s"}` : "No active locations assigned", section: "connections" as const },
-    { id: "discovery", title: "Request business units", detail: discoveredBusinessUnitCount ? `${discoveredBusinessUnitCount} active business unit${discoveredBusinessUnitCount === 1 ? "" : "s"} found` : "No business units loaded", section: "connections" as const },
+    { id: "discovery", title: "Discover business units", detail: discoveredBusinessUnitCount ? `${discoveredBusinessUnitCount} active business unit${discoveredBusinessUnitCount === 1 ? "" : "s"} found` : "No business units loaded", section: "connections" as const },
     { id: "mappings", title: "Map business units", detail: mappedBusinessUnitCount ? `${mappedBusinessUnitCount} current mapping${mappedBusinessUnitCount === 1 ? "" : "s"}` : "No current mappings", section: "connections" as const },
   ];
 
@@ -731,7 +727,7 @@ function SetupOverview({ tenant, navigate }: { tenant: ProductionTenantContext; 
               <li key={detail.id}>
                 <button type="button" onClick={() => navigate(detail.section)}>
                   <span className={milestone?.complete ? "complete" : "needed"} aria-hidden="true">{milestone?.complete ? "✓" : index + 1}</span>
-                  <div><strong>{detail.title}</strong><small>{detail.detail}</small></div>
+                  <div><strong>{detail.title}</strong><small>{detail.detail}</small><span className="sr-only">Status: {milestone?.complete ? "complete" : "not complete"}</span></div>
                   <b>{milestone?.complete ? "Complete" : "Continue"}</b>
                 </button>
               </li>
@@ -744,7 +740,7 @@ function SetupOverview({ tenant, navigate }: { tenant: ProductionTenantContext; 
 }
 
 function AdminSectionNavigation({ section, navigate }: { section: ProductionAdminSection; navigate: (section: ProductionAdminSection) => void }) {
-  const groups = ["Get started", "Manage performance", "Planned controls"] as const;
+  const groups = ["Get started", "Manage performance", "Govern workspace"] as const;
   return (
     <>
       <label className="production-admin-mobile-select">
@@ -780,17 +776,19 @@ export function ProductionAdminConsole({
   tenant,
   mode,
   initialSection = "overview",
+  settingsWorkspace,
 }: {
   tenant: ProductionTenantContext;
   mode: "staging" | "production";
   initialSection?: ProductionAdminSection;
+  settingsWorkspace: ProductionAdminSettingsWorkspace;
 }) {
   const [section, navigate] = usePersistedAdminSection(initialSection);
   const selectedSection = PRODUCTION_ADMIN_SECTIONS.find((item) => item.id === section) ?? PRODUCTION_ADMIN_SECTIONS[0];
-  const readyConnections = tenant.connections.filter((connection) => connection.status === "ready" && Boolean(connection.last_validated_at)).length;
 
   return (
-    <main className="production-shell">
+    <>
+      <a className="skip-link" href="#admin-main">Skip to Admin Center content</a>
       <ProductionNavigation
         contextLabel={tenant.organization.name}
         mode={mode}
@@ -801,7 +799,7 @@ export function ProductionAdminConsole({
         selectedOrganizationId={tenant.organization.id}
         nextPath="/admin"
       />
-      <div className="production-page production-admin-page">
+      <main id="admin-main" className="production-shell production-page production-admin-page">
         <div className="production-title-row production-admin-title-row">
           <div><span>Organization administration</span><h1>Admin Center</h1><p>Manage setup and performance configuration for <strong>{tenant.organization.name}</strong>.</p></div>
           <Link href="/" className="button secondary">Return to dashboard</Link>
@@ -854,12 +852,12 @@ export function ProductionAdminConsole({
             ) : null}
 
             {section === "kpis" ? <OriginalKpiCatalogManager tenant={tenant} /> : null}
-            {section === "sources" ? <DeferredAdminSection title="Data sources" description={readyConnections > 0 ? "A validated ServiceTitan connection is available. Creating and publishing report sources is not available from this Admin Center release." : "A ServiceTitan connection must be validated before report-source work can begin. Creating and publishing sources is not available from this Admin Center release."} available={[`${readyConnections} validated ServiceTitan connection${readyConnections === 1 ? "" : "s"}`, "Saved-report records and parameter contracts", "Reconciliation evidence records", "Revision-aware ingestion foundations"]} nextStep="A future release must add secured actions for report discovery, evidence review, and source publication before administrators can manage sources here." /> : null}
-            {section === "targets" ? <DeferredAdminSection title="Targets & budgets" description="Effective-dated KPI target records are supported, but this release does not provide an administrative editor. Monthly budgets do not yet have a production workflow." available={["Effective-dated KPI target records", "Organization and location scope", "Approval and audit foundations", "Target-aware dashboard foundations"]} nextStep="A future release must add an audited target editor and a versioned monthly budget workflow with approval history." /> : null}
-            {section === "layouts" ? <DeferredAdminSection title="Layouts & access" description="Shared layout records and organization roles exist, but this release does not provide self-service layout or access controls." available={["Versioned layout templates", "Profile layout records", "Owner and administrator roles", "Organization membership boundaries"]} nextStep="A future release must add audited role-template actions and user-owned cross-device layout controls before editing can be enabled." /> : null}
+            {section === "sources" ? <ProductionDataSourcesSettings tenant={tenant} workspace={settingsWorkspace} /> : null}
+            {section === "targets" ? <ProductionTargetsBudgetsSettings tenant={tenant} workspace={settingsWorkspace} /> : null}
+            {section === "layouts" ? <ProductionLayoutsAccessSettings tenant={tenant} workspace={settingsWorkspace} /> : null}
           </div>
         </div>
-      </div>
-    </main>
+      </main>
+    </>
   );
 }

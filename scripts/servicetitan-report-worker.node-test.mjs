@@ -42,6 +42,7 @@ test("report parameters replace only exact period placeholders", () => {
 test("report response enforces exact ordered schema and row width", () => {
   assert.deepEqual(parseReportDataResponse({ fields: [{ name: "Revenue" }, { name: "Booked" }, { name: "Eligible" }], data: [["10", 2, 4]], hasMore: false }, fields), {
     fields: ["Revenue", "Booked", "Eligible"], rows: [["10", 2, 4]], hasMore: false,
+    observedSchemaFingerprint: "schema-v3.WyJSZXZlbnVlIiwiQm9va2VkIiwiRWxpZ2libGUiXQ",
   });
   assert.throws(() => parseReportDataResponse({ fields: [{ name: "Booked" }, { name: "Revenue" }, { name: "Eligible" }], data: [], hasMore: false }, fields), /schema/);
   assert.throws(() => parseReportDataResponse({ fields: [{ name: "Revenue" }, { name: "Booked" }, { name: "Eligible" }], data: [[1, 2]], hasMore: false }, fields), /row/);
@@ -58,11 +59,15 @@ test("numeric parsing is strict and finite", () => {
 test("reductions compute sum, average, count, and percent ratio while latest fails closed", () => {
   const rows = [[10, 2, 4], [20, 3, 6]];
   const names = fields.map((field) => field.name);
-  assert.deepEqual(reduceReportRows({ rows, fields: names, reduction: "sum", valueField: "Revenue" }), { value: 30, numerator: null, denominator: null });
-  assert.deepEqual(reduceReportRows({ rows, fields: names, reduction: "average", valueField: "Revenue" }), { value: 15, numerator: null, denominator: null });
-  assert.deepEqual(reduceReportRows({ rows, fields: names, reduction: "count" }), { value: 2, numerator: null, denominator: null });
+  assert.equal(reduceReportRows({ rows, fields: names, reduction: "sum", valueField: "Revenue" }).decimalValue, "30");
+  assert.equal(reduceReportRows({ rows, fields: names, reduction: "average", valueField: "Revenue" }).decimalValue, "15");
+  assert.equal(reduceReportRows({ rows, fields: names, reduction: "count" }).decimalValue, "2");
   assert.throws(() => reduceReportRows({ rows, fields: names, reduction: "latest", valueField: "Revenue" }), /ordering contract/);
-  assert.deepEqual(reduceReportRows({ rows, fields: names, reduction: "ratio", numeratorField: "Booked", denominatorField: "Eligible", valueKind: "percent" }), { value: 50, numerator: 5, denominator: 10 });
+  const ratio = reduceReportRows({ rows, fields: names, reduction: "ratio", numeratorField: "Booked", denominatorField: "Eligible", valueKind: "percent" });
+  assert.equal(ratio.decimalValue, "50");
+  assert.equal(ratio.decimalNumerator, "5");
+  assert.equal(ratio.decimalDenominator, "10");
+  assert.equal(reduceReportRows({ rows: [["9007199254740993"], ["0.01"]], fields: ["Revenue"], reduction: "sum", valueField: "Revenue" }).decimalValue, "9007199254740993.01");
 });
 
 test("reductions fail closed for empty data, missing fields, and zero denominator", () => {

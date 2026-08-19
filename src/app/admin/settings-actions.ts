@@ -14,8 +14,8 @@ import {
 import { validateUuid } from "@/lib/tenant-context";
 import type { AdminActionState } from "./actions";
 
-const SOURCE_METHODS = new Set(["endpoint_recipe", "saved_report"]);
-const REPORT_REDUCTIONS = new Set(["sum", "average", "count", "latest", "ratio"]);
+const SOURCE_METHODS = new Set(["saved_report"]);
+const REPORT_REDUCTIONS = new Set(["sum", "average", "count", "ratio"]);
 const TARGET_LIFECYCLES = new Set(["draft", "published"]);
 const FIELD_TYPES = new Set(["number", "string", "date", "boolean"]);
 const PARAMETER_TYPES = new Set(["String", "Number", "Boolean", "Date", "Time"]);
@@ -68,24 +68,34 @@ function refreshAdmin() {
 }
 
 function validReportFields(value: unknown): value is ServiceTitanReportField[] {
-  return Array.isArray(value) && value.length > 0 && value.every((field) => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 200) return false;
+  const names = new Set<string>();
+  return value.every((field) => {
     if (!field || typeof field !== "object" || Array.isArray(field)) return false;
     const candidate = field as Record<string, unknown>;
-    return typeof candidate.name === "string" && candidate.name.trim() !== ""
-      && typeof candidate.label === "string" && candidate.label.trim() !== ""
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+    const keys = Object.keys(candidate);
+    if (!name || names.has(name) || name.length > 160 || keys.some((key) => !["name", "label", "type"].includes(key))) return false;
+    names.add(name);
+    return typeof candidate.label === "string" && candidate.label.trim().length > 0 && candidate.label.length <= 200
       && typeof candidate.type === "string" && FIELD_TYPES.has(candidate.type);
   });
 }
 
 function validReportParameters(value: unknown): boolean {
-  return Array.isArray(value) && value.every((parameter) => {
+  if (!Array.isArray(value) || value.length > 100) return false;
+  const names = new Set<string>();
+  return value.every((parameter) => {
     if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) return false;
     const candidate = parameter as Record<string, unknown>;
-    return typeof candidate.name === "string" && candidate.name.trim() !== ""
-      && typeof candidate.label === "string" && candidate.label.trim() !== ""
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+    const keys = Object.keys(candidate);
+    if (!name || names.has(name) || name.length > 160 || keys.some((key) => !["name", "label", "dataType", "isArray", "isRequired", "dynamicSetId"].includes(key))) return false;
+    names.add(name);
+    return typeof candidate.label === "string" && candidate.label.trim().length > 0 && candidate.label.length <= 200
       && typeof candidate.dataType === "string" && PARAMETER_TYPES.has(candidate.dataType)
       && typeof candidate.isArray === "boolean" && typeof candidate.isRequired === "boolean"
-      && (candidate.dynamicSetId === undefined || (typeof candidate.dynamicSetId === "string" && candidate.dynamicSetId.trim() !== ""));
+      && (candidate.dynamicSetId === undefined || (typeof candidate.dynamicSetId === "string" && candidate.dynamicSetId.trim() !== "" && candidate.dynamicSetId.length <= 160));
   });
 }
 
@@ -121,7 +131,7 @@ export async function registerReportSourceAction(
   const { data: connection, error: connectionError } = await writable.supabase
     .from("service_titan_connections")
     .select("id, service_titan_tenant_id")
-    .eq("organization_id", writable.organizationId).eq("id", connectionId).neq("status", "archived").maybeSingle();
+    .eq("organization_id", writable.organizationId).eq("id", connectionId).eq("status", "ready").maybeSingle();
   if (connectionError || !connection) return failure("The selected ServiceTitan connection is not available in this tenant.");
 
   const reportFields = fields.ok ? fields.value as ServiceTitanReportField[] : [];
@@ -224,21 +234,34 @@ export async function saveKpiBindingAction(
     const numeratorField = input(formData, "numeratorField");
     const denominatorField = input(formData, "denominatorField");
     if (!validateUuid(reportSourceId) || !REPORT_REDUCTIONS.has(reduction) || !["4h", "12h", "24h"].includes(refreshInterval)) {
-      return failure("Choose an approved saved report, reduction, and supported report cadence.");
+      return failure("Choose an active saved report, reduction, and supported report cadence.");
     }
-    const { data: report } = await writable.supabase.from("service_titan_report_sources").select("id, fields")
+    const { data: report } = await writable.supabase.from("service_titan_report_sources").select("id, fields, parameters, lifecycle, status")
       .eq("organization_id", writable.organizationId).eq("id", reportSourceId).eq("connection_id", connectionId)
-      .eq("lifecycle", "approved").eq("status", "active").maybeSingle();
-    if (!report) return failure("The saved report is not approved and active for the selected tenant connection.");
-    const fieldNames = new Set((Array.isArray(report.fields) ? report.fields : []).flatMap((field) =>
+      .neq("lifecycle", "archived").eq("status", "active").maybeSingle();
+    if (!report) return failure("The saved report is not active for the selected tenant connection.");
+    const reportFields = Array.isArray(report.fields) ? report.fields : [];
+    const fieldNames = new Set(reportFields.flatMap((field) =>
       field && typeof field === "object" && typeof (field as Record<string, unknown>).name === "string"
         ? [(field as Record<string, unknown>).name as string] : []));
+    const numericFieldNames = new Set(reportFields.flatMap((field) =>
+      field && typeof field === "object" && (field as Record<string, unknown>).type === "number"
+        && typeof (field as Record<string, unknown>).name === "string"
+        ? [(field as Record<string, unknown>).name as string] : []));
+    const submittedParameters = parameterValues.value as Record<string, unknown>;
+    const requiredParameterNames = (Array.isArray(report.parameters) ? report.parameters : []).flatMap((parameter) =>
+      parameter && typeof parameter === "object" && (parameter as Record<string, unknown>).isRequired === true
+        && typeof (parameter as Record<string, unknown>).name === "string"
+        ? [(parameter as Record<string, unknown>).name as string] : []);
+    if (requiredParameterNames.some((name) => !(name in submittedParameters))) {
+      return failure("Provide every required parameter from the approved report contract.", { parameterValues: "One or more required report parameters are missing." });
+    }
     if (reduction === "ratio") {
-      if (!fieldNames.has(numeratorField) || !fieldNames.has(denominatorField) || numeratorField === denominatorField) {
-        return failure("Ratio bindings require two different fields present in the approved report schema.");
+      if (!numericFieldNames.has(numeratorField) || !numericFieldNames.has(denominatorField) || numeratorField === denominatorField) {
+        return failure("Ratio bindings require two different numeric fields from the approved report schema.");
       }
-    } else if (reduction !== "count" && !fieldNames.has(valueField)) {
-      return failure("Choose a value field present in the approved report schema.");
+    } else if (reduction !== "count" && (!fieldNames.has(valueField) || !numericFieldNames.has(valueField))) {
+      return failure("Choose a numeric value field from the approved report schema.");
     }
     row = {
       ...base,
@@ -281,7 +304,7 @@ export async function saveKpiTargetAction(
   const errors: Record<string, string> = {};
   if (targetId && !validateUuid(targetId)) errors.targetId = "Invalid target identifier.";
   if (locationId && !validateUuid(locationId)) errors.locationId = "Choose a valid location or organization-wide scope.";
-  if (kpiDefinitionId && !validateUuid(kpiDefinitionId)) errors.kpiDefinitionId = "Choose a valid published KPI definition.";
+  if (!validateUuid(kpiDefinitionId)) errors.kpiDefinitionId = "Choose a valid published KPI definition.";
   if (!isValidMetricKey(metricKey)) errors.metricKey = "Use a 3–81 character lowercase metric key.";
   if (targetValue === null) errors.targetValue = "Enter a finite value up to 1 quadrillion.";
   if (warningRaw && warningValue === null) errors.warningValue = "Enter a finite warning value or leave it blank.";
@@ -293,14 +316,12 @@ export async function saveKpiTargetAction(
 
   if (locationId) {
     const { data: location } = await writable.supabase.from("locations").select("id")
-      .eq("organization_id", writable.organizationId).eq("id", locationId).neq("status", "archived").maybeSingle();
+      .eq("organization_id", writable.organizationId).eq("id", locationId).eq("status", "active").maybeSingle();
     if (!location) return failure("The selected location is not active in this tenant.");
   }
-  if (kpiDefinitionId) {
-    const { data: definition } = await writable.supabase.from("custom_kpi_definitions").select("id, kpi_key")
-      .eq("organization_id", writable.organizationId).eq("id", kpiDefinitionId).eq("lifecycle", "published").maybeSingle();
-    if (!definition || definition.kpi_key !== metricKey) return failure("The metric key must match the selected published KPI definition.");
-  }
+  const { data: definition } = await writable.supabase.from("custom_kpi_definitions").select("id, kpi_key")
+    .eq("organization_id", writable.organizationId).eq("id", kpiDefinitionId).eq("lifecycle", "published").maybeSingle();
+  if (!definition || definition.kpi_key !== metricKey) return failure("The metric key must match the selected published KPI definition.");
 
   const dimensions = { planning_type: planningType, ...(note ? { note } : {}) };
   if (targetId) {

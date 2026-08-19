@@ -20,6 +20,7 @@ export interface ProductionReportSource {
   fields: unknown[];
   parameters: unknown[];
   lifecycle: string;
+  status: string;
   verification: string;
   expected_schema_fingerprint: string;
   observed_schema_fingerprint: string | null;
@@ -134,7 +135,7 @@ export async function loadProductionAdminSettings(
       .select("endpoint_recipe_id, endpoint_recipe_version, refresh_interval")
       .order("endpoint_recipe_id").order("endpoint_recipe_version").order("refresh_interval"),
     supabase.from("service_titan_report_sources")
-      .select("id, connection_id, service_titan_tenant_id, category_id, report_id, owner_display_name, name, description, fields, parameters, lifecycle, verification, expected_schema_fingerprint, observed_schema_fingerprint, provider_modified_at, updated_at")
+      .select("id, connection_id, service_titan_tenant_id, category_id, report_id, owner_display_name, name, description, fields, parameters, lifecycle, status, verification, expected_schema_fingerprint, observed_schema_fingerprint, provider_modified_at, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("custom_kpi_definitions")
       .select("id, kpi_key, title, type, value_kind, lifecycle, version")
@@ -152,7 +153,7 @@ export async function loadProductionAdminSettings(
       .select("id, profile_id, location_id, template_id, overrides, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("organization_memberships")
-      .select("id, profile_id, role, status, profiles(display_name, job_title)")
+      .select("id, profile_id, role, status, profiles!organization_memberships_profile_id_fkey(display_name, job_title)")
       .eq("organization_id", organizationId).order("role").order("profile_id"),
   ]) as unknown as QueryResult[];
 
@@ -184,6 +185,9 @@ export function parseConfigurationJson(
   raw: string,
   shape: "array" | "object",
 ): { ok: true; value: unknown[] | Record<string, unknown> } | { ok: false; message: string } {
+  if (new TextEncoder().encode(raw).length > 32_768) {
+    return { ok: false, message: "Configuration JSON is limited to 32 KB." };
+  }
   try {
     const value: unknown = JSON.parse(raw);
     const validShape = shape === "array"
@@ -193,6 +197,19 @@ export function parseConfigurationJson(
     if (containsForbiddenConfigurationKey(value)) {
       return { ok: false, message: "Credential-like keys are not permitted in configuration JSON." };
     }
+    let nodes = 0;
+    const bounded = (candidate: unknown, depth = 0): boolean => {
+      nodes += 1;
+      if (nodes > 1_000 || depth > 8) return false;
+      if (typeof candidate === "string") return candidate.length <= 2_000;
+      if (Array.isArray(candidate)) return candidate.length <= 250 && candidate.every((item) => bounded(item, depth + 1));
+      if (candidate && typeof candidate === "object") {
+        const entries = Object.entries(candidate as Record<string, unknown>);
+        return entries.length <= 250 && entries.every(([key, nested]) => key.length <= 160 && bounded(nested, depth + 1));
+      }
+      return true;
+    };
+    if (!bounded(value)) return { ok: false, message: "Configuration JSON exceeds the allowed depth, item count, or text length." };
     return { ok: true, value: value as unknown[] | Record<string, unknown> };
   } catch {
     return { ok: false, message: `Enter a valid JSON ${shape}.` };

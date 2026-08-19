@@ -101,15 +101,16 @@ Run `supabase/tests/schema_verification.sql` with a privileged direct PostgreSQL
 ```text
 APP_MODE=production
 NEXT_PUBLIC_SUPABASE_URL=https://PROJECT.supabase.co
+SUPABASE_URL=https://PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=publishable/RLS-constrained value
 SUPABASE_SERVICE_ROLE_KEY=operator/worker environment only
 GM_PLATFORM_OWNER_PROFILE_ID=approved Champions Group operator profile UUID
 GM_DEFAULT_PORTFOLIO_ID=c1000000-0000-4000-8000-000000000001
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Normal web requests do not require the service-role key.
+`SUPABASE_URL` is server-only and must exactly match `NEXT_PUBLIC_SUPABASE_URL`; this prevents trusted Admin workers from being redirected to another project. `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Only the narrow server-side ServiceTitan validation/discovery actions and trusted operators use the service-role key; browser requests never receive it.
 
-The application release is compiled to require the exact database marker `20260818001400_configuration_revision_race_guard`; the expected marker is intentionally not environment-configurable.
+The application release is compiled to require the exact database marker `20260819001600_enterprise_admin_hardening`; the expected marker is intentionally not environment-configurable.
 
 Private-pilot user creation is enforced at the database boundary: only a service-role-preauthorized email can be created, the authorization expires after five minutes, and it is consumed once. The bootstrap script performs this authorization immediately before `admin.createUser()`. If Supabase Management API access becomes available, also disable provider-level public signup as defense in depth.
 

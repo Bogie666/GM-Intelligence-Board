@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import type { AdminActionState } from "@/app/admin/actions";
 import {
@@ -17,6 +17,7 @@ import {
   type ProductionKpiTarget,
 } from "@/lib/production-admin-settings";
 import { serviceTitanEndpointRecipes } from "@/lib/service-titan-sources";
+
 
 const INITIAL: AdminActionState = { status: "idle", message: "" };
 
@@ -45,60 +46,53 @@ function WorkspaceWarnings({ workspace, area }: { workspace: ProductionAdminSett
   ) : null;
 }
 
-function recipeLabel(policy: EndpointRecipePolicy): string {
-  const recipe = serviceTitanEndpointRecipes.find((item) => item.id === policy.endpoint_recipe_id && item.version === policy.endpoint_recipe_version);
-  return recipe?.name ?? policy.endpoint_recipe_id;
-}
 
 function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace }) {
   const [state, action] = useActionState(saveKpiBindingAction, INITIAL);
-  const [method, setMethod] = useState("endpoint_recipe");
-  const [recipeKey, setRecipeKey] = useState(() => {
-    const first = workspace.endpointRecipes[0];
-    return first ? `${first.endpoint_recipe_id}:${first.endpoint_recipe_version}` : "";
-  });
-  const recipePolicies = useMemo(() => {
-    const grouped = new Map<string, EndpointRecipePolicy[]>();
-    for (const policy of workspace.endpointRecipes) {
-      const key = `${policy.endpoint_recipe_id}:${policy.endpoint_recipe_version}`;
-      grouped.set(key, [...(grouped.get(key) ?? []), policy]);
-    }
-    return grouped;
-  }, [workspace.endpointRecipes]);
-  const [recipeId, recipeVersion = ""] = recipeKey.split(":");
-  const allowedCadences = recipePolicies.get(recipeKey)?.map((policy) => policy.refresh_interval) ?? [];
+  const [locationId, setLocationId] = useState("");
+  const [connectionId, setConnectionId] = useState("");
+  const [reportId, setReportId] = useState("");
+  const [reduction, setReduction] = useState("sum");
   const activeLocations = tenant.locations.filter((location) => location.status === "active");
-  const availableConnections = tenant.connections.filter((connection) => connection.status !== "archived" && connection.status !== "disabled");
-  const approvedReports = workspace.reportSources.filter((report) => report.lifecycle === "approved");
+  const assignedConnectionIds = new Set(tenant.assignments
+    .filter((assignment) => assignment.location_id === locationId && assignment.revoked_at === null)
+    .map((assignment) => assignment.connection_id));
+  const availableConnections = tenant.connections.filter((connection) =>
+    connection.status === "ready" && assignedConnectionIds.has(connection.id));
+  const eligibleReports = workspace.reportSources.filter((report) =>
+    report.status === "active" && report.lifecycle !== "archived" && report.connection_id === connectionId);
+  const selectedReport = eligibleReports.find((report) => report.id === reportId);
+  const numericFields = (selectedReport?.fields ?? []).flatMap((field) => {
+    if (!field || typeof field !== "object") return [];
+    const value = field as Record<string, unknown>;
+    return value.type === "number" && typeof value.name === "string" ? [value.name] : [];
+  });
+  const requiredParameters = (selectedReport?.parameters ?? []).flatMap((parameter) => {
+    if (!parameter || typeof parameter !== "object") return [];
+    const value = parameter as Record<string, unknown>;
+    return value.isRequired === true && typeof value.name === "string" ? [value.name] : [];
+  });
+  const defaultParameters = Object.fromEntries(requiredParameters.map((name) => [name,
+    /(^|\b)(to|end)/i.test(name) ? "$periodEndDate" : "$periodStartDate"]));
 
   return (
     <section className="production-panel">
-      <div className="production-panel-heading"><div><span>Exact-location contract</span><h2>Bind a published KPI</h2></div></div>
-      <p className="production-boundary-note">Saving creates a draft binding. Approval remains unavailable until trusted sample and reconciliation evidence exist for its exact source fingerprint.</p>
+      <div className="production-panel-heading"><div><span>Exact-location contract</span><h2>Create a draft report binding</h2></div></div>
+      <p className="production-boundary-note">Active declared, inspected, or approved reports can be configured as draft bindings. Ingestion remains impossible until the trusted sample and reconciliation workflow atomically approves both contracts.</p>
       <form action={action} className="production-form-grid">
+        <input type="hidden" name="sourceMethod" value="saved_report" />
         <label>Published ServiceTitan KPI<select name="kpiDefinitionId" required defaultValue=""><option value="" disabled>Choose KPI</option>{workspace.kpiDefinitions.filter((definition) => definition.type === "service_titan").map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key} v{definition.version}</option>)}</select></label>
-        <label>Location<select name="locationId" required defaultValue=""><option value="" disabled>Choose location</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
-        <label>Connection<select name="connectionId" required defaultValue=""><option value="" disabled>Choose connection</option>{availableConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.display_name} · {connection.service_titan_tenant_id}</option>)}</select></label>
-        <label>Source method<select name="sourceMethod" value={method} onChange={(event) => setMethod(event.target.value)}><option value="endpoint_recipe">Approved endpoint recipe</option><option value="saved_report">Approved saved report</option></select></label>
-        {method === "endpoint_recipe" ? (
-          <>
-            <label>Recipe<select value={recipeKey} onChange={(event) => setRecipeKey(event.target.value)} required><option value="" disabled>Choose recipe</option>{[...recipePolicies.entries()].map(([key, policies]) => <option key={key} value={key}>{recipeLabel(policies[0])} · v{policies[0].endpoint_recipe_version}</option>)}</select></label>
-            <input type="hidden" name="endpointRecipeId" value={recipeId} /><input type="hidden" name="endpointRecipeVersion" value={recipeVersion} />
-            <label>Refresh cadence<select name="refreshInterval" required defaultValue={allowedCadences.includes("1h") ? "1h" : allowedCadences[0]}>{allowedCadences.map((cadence) => <option key={cadence} value={cadence}>{cadence}</option>)}</select></label>
-          </>
-        ) : (
-          <>
-            <label>Approved saved report<select name="reportSourceId" required defaultValue=""><option value="" disabled>Choose report</option>{approvedReports.map((report) => <option key={report.id} value={report.id}>{report.name} · {report.service_titan_tenant_id}</option>)}</select></label>
-            <label>Refresh cadence<select name="refreshInterval" defaultValue="24h"><option value="4h">4h</option><option value="12h">12h</option><option value="24h">24h</option></select></label>
-            <label>Reduction<select name="reportReduction" defaultValue="sum"><option value="sum">Sum</option><option value="average">Average</option><option value="count">Count rows</option><option value="latest">Latest</option><option value="ratio">Ratio</option></select></label>
-            <label>Value field<input name="valueField" maxLength={160} placeholder="Revenue" /></label>
-            <label>Numerator field<input name="numeratorField" maxLength={160} placeholder="BookedCalls" /></label>
-            <label>Denominator field<input name="denominatorField" maxLength={160} placeholder="EligibleCalls" /></label>
-          </>
-        )}
-        <label className="span-two">Parameter values (JSON object)<textarea name="parameterValues" rows={3} defaultValue="{}" spellCheck={false} /></label>
-        <label className="span-two">Business-unit mappings (JSON object)<textarea name="businessUnitMappings" rows={3} defaultValue="{}" spellCheck={false} /></label>
-        <div className="production-form-footer"><span>Connection/location identity and recipe cadence are revalidated server-side and by database constraints.</span><Submit>Save draft binding</Submit></div>
+        <label>Active location<select name="locationId" required value={locationId} onChange={(event) => { setLocationId(event.target.value); setConnectionId(""); setReportId(""); }}><option value="" disabled>Choose location</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
+        <label>Validated assigned connection<select name="connectionId" required value={connectionId} onChange={(event) => { setConnectionId(event.target.value); setReportId(""); }} disabled={!locationId}><option value="">{locationId ? "Choose connection" : "Choose a location first"}</option>{availableConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.display_name} · {connection.service_titan_tenant_id}</option>)}</select></label>
+        <label>Active saved report<select name="reportSourceId" required value={reportId} onChange={(event) => setReportId(event.target.value)} disabled={!connectionId}><option value="">{connectionId ? "Choose report" : "Choose a connection first"}</option>{eligibleReports.map((report) => <option key={report.id} value={report.id}>{report.name} · {report.lifecycle}</option>)}</select></label>
+        <label>Refresh cadence<select name="refreshInterval" defaultValue="24h"><option value="4h">Every 4 hours</option><option value="12h">Every 12 hours</option><option value="24h">Every 24 hours</option></select></label>
+        <label>Reduction<select name="reportReduction" value={reduction} onChange={(event) => setReduction(event.target.value)}><option value="sum">Sum</option><option value="average">Average</option><option value="count">Count rows</option><option value="ratio">Ratio</option></select></label>
+        {reduction !== "count" && reduction !== "ratio" ? <label>Numeric value field<select key={`${reportId}:${reduction}`} name="valueField" required defaultValue=""><option value="" disabled>Choose field</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label> : <input type="hidden" name="valueField" value="" />}
+        {reduction === "ratio" ? <><label>Numerator field<select name="numeratorField" required defaultValue=""><option value="" disabled>Choose numerator</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label><label>Denominator field<select name="denominatorField" required defaultValue=""><option value="" disabled>Choose denominator</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label></> : <><input type="hidden" name="numeratorField" value="" /><input type="hidden" name="denominatorField" value="" /></>}
+        <label className="span-two">Required report parameters (JSON object)<textarea key={reportId} name="parameterValues" rows={3} defaultValue={JSON.stringify(defaultParameters, null, 2)} spellCheck={false} aria-describedby="binding-parameter-help" /></label>
+        <p id="binding-parameter-help" className="production-inline-guidance span-two">Required names are populated from the declared report contract. Period placeholders are resolved by the worker at governance and ingestion time.</p>
+        <input type="hidden" name="businessUnitMappings" value="{}" />
+        <div className="production-form-footer"><span>Saving creates a draft exact-location binding. A governed evidence review is required before ingestion.</span><Submit>Save draft binding</Submit></div>
       </form>
       <Notice state={state} />
     </section>
@@ -144,7 +138,7 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
       <WorkspaceWarnings workspace={workspace} area={["Endpoint recipes", "Saved report sources", "Published KPI definitions", "KPI bindings"]} />
       <section className="production-section">
         <div className="production-section-title"><div><span>Migration-approved contracts</span><h2>Endpoint recipes</h2></div><strong>{recipeGroups.size}</strong></div>
-        <p className="production-muted-copy">Recipes are application-owned and can only be added or versioned by a reviewed migration. Administrators may inspect and select them; this screen cannot invent provider endpoints.</p>
+        <p className="production-muted-copy">Recipes are application-owned and can only be added or versioned by a reviewed migration. They remain visible as the governed catalog for the dedicated endpoint-worker rollout; this release intentionally creates new bindings only from saved reports because no endpoint ingestion worker is deployed.</p>
         <div className="production-record-list">{[...recipeGroups.entries()].map(([key, policies]) => {
           const catalog = serviceTitanEndpointRecipes.find((recipe) => recipe.id === policies[0].endpoint_recipe_id && recipe.version === policies[0].endpoint_recipe_version);
           return <article className="production-record" key={key}><div className="production-record-heading"><div><strong>{catalog?.name ?? policies[0].endpoint_recipe_id}</strong><span>{policies[0].endpoint_recipe_id} · version {policies[0].endpoint_recipe_version}</span></div><span className="production-status ready">approved</span></div><p>{catalog?.description ?? "Migration-owned ServiceTitan recipe contract."}</p><small>Allowed cadence: {policies.map((policy) => policy.refresh_interval).join(", ")}</small></article>;
@@ -153,12 +147,35 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
       <ReportSourceForm tenant={tenant} />
       <section className="production-section">
         <div className="production-section-title"><div><span>Tenant registry</span><h2>Saved report sources</h2></div><strong>{workspace.reportSources.length}</strong></div>
-        <div className="production-record-list">{workspace.reportSources.map((report) => <article className="production-record" key={report.id}><div className="production-record-heading"><div><strong>{report.name}</strong><span>{report.category_id} / {report.report_id} · {report.owner_display_name}</span></div><span className={`production-status ${report.lifecycle}`}>{report.lifecycle}</span></div><p>{report.description || "No report description."}</p><small>{report.verification} · {report.fields.length} fields · expected schema {report.expected_schema_fingerprint.slice(0, 22)}…</small></article>)}{workspace.reportSources.length === 0 ? <div className="production-empty">No saved report source has been registered for this tenant.</div> : null}</div>
+        <p className="production-muted-copy">Registration creates a governed declaration. Approval requires a live sample plus reconciliation to an independently sourced reference value; the trusted operator command records both proofs without exposing credentials to the browser.</p>
+        <div className="production-record-list">
+          {workspace.reportSources.map((report) => (
+            <article className="production-record" key={report.id}>
+              <div className="production-record-heading"><div><strong>{report.name}</strong><span>{report.category_id} / {report.report_id} · {report.owner_display_name}</span></div><span className={`production-status ${report.lifecycle}`}>{report.lifecycle}</span></div>
+              <p>{report.description || "No report description."}</p>
+              <small>{report.verification} · {report.fields.length} fields · expected schema {report.expected_schema_fingerprint.slice(0, 22)}…</small>
+              {report.lifecycle !== "approved" ? <small>Governance pending · source ID <code>{report.id}</code></small> : <small>Sample and reconciliation evidence approved for the exact current fingerprint.</small>}
+            </article>
+          ))}
+          {workspace.reportSources.length === 0 ? <div className="production-empty">No saved report source has been registered for this tenant.</div> : null}
+        </div>
       </section>
       <SourceBindingForm tenant={tenant} workspace={workspace} />
       <section className="production-section">
         <div className="production-section-title"><div><span>Exact-location registry</span><h2>KPI bindings</h2></div><strong>{workspace.bindings.length}</strong></div>
-        <div className="production-record-list">{workspace.bindings.map((binding) => <article className="production-record" key={binding.id}><div className="production-record-heading"><div><strong>{definitionName.get(binding.kpi_definition_id) ?? binding.kpi_definition_id}</strong><span>{locationName.get(binding.location_id) ?? binding.location_id} · {binding.source_method ?? "unconfigured"}</span></div><span className={`production-status ${binding.approval_status}`}>{binding.approval_status}</span></div><small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"}</small></article>)}{workspace.bindings.length === 0 ? <div className="production-empty">No exact-location KPI bindings have been saved.</div> : null}</div>
+        <p className="production-muted-copy">Draft saved-report bindings are intentionally non-ingestible. A trusted operator must reconcile one completed sample period before the database atomically approves both the source and binding.</p>
+        <div className="production-record-list">
+          {workspace.bindings.map((binding) => (
+            <article className="production-record" key={binding.id}>
+              <div className="production-record-heading"><div><strong>{definitionName.get(binding.kpi_definition_id) ?? binding.kpi_definition_id}</strong><span>{locationName.get(binding.location_id) ?? binding.location_id} · {binding.source_method ?? "unconfigured"}</span></div><span className={`production-status ${binding.approval_status}`}>{binding.approval_status}</span></div>
+              <small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"}</small>
+              {binding.source_method === "saved_report" && binding.approval_status !== "approved" ? (
+                <details className="production-operator-handoff"><summary>Trusted approval command</summary><p>Run after obtaining an independent ServiceTitan reference value for one completed period.</p><code>{`npm run servicetitan:approve-report -- --organization-id ${tenant.organization.id} --binding-id ${binding.id} --actor-profile-id ${tenant.user.id} --period-start PERIOD_START_ISO --period-end PERIOD_END_ISO --reference-value REFERENCE_VALUE --tolerance TOLERANCE --confirm ${tenant.organization.id}:${binding.id}:PERIOD_START_ISO`}</code></details>
+              ) : null}
+            </article>
+          ))}
+          {workspace.bindings.length === 0 ? <div className="production-empty">No exact-location KPI bindings have been saved.</div> : null}
+        </div>
       </section>
     </>
   );
@@ -166,18 +183,21 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
 
 function TargetForm({ tenant, workspace, target }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace; target?: ProductionKpiTarget }) {
   const [state, action] = useActionState(saveKpiTargetAction, INITIAL);
+  const [selectedKpiId, setSelectedKpiId] = useState(target?.kpi_definition_id ?? "");
   const planningType = target?.dimensions?.planning_type === "budget" ? "budget" : "target";
   const note = typeof target?.dimensions?.note === "string" ? target.dimensions.note : "";
   const identityLocked = Boolean(target);
+  const selectedDefinition = workspace.kpiDefinitions.find((definition) => definition.id === selectedKpiId);
+  const valueKind = selectedDefinition?.value_kind?.replaceAll("_", " ") ?? "numeric";
   return (
     <form action={action} className="production-form-grid compact">
       {target ? <input type="hidden" name="targetId" value={target.id} /> : null}
       <label>Plan type<select name="planningType" defaultValue={planningType}><option value="target">KPI target</option><option value="budget">Budget-tagged KPI target</option></select></label>
-      <label>Scope<select name="locationId" defaultValue={target?.location_id ?? ""} disabled={identityLocked}><option value="">Organization-wide</option>{tenant.locations.filter((location) => location.status !== "archived").map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select>{identityLocked ? <input type="hidden" name="locationId" value={target?.location_id ?? ""} /> : null}</label>
-      <label>Published KPI<select name="kpiDefinitionId" defaultValue={target?.kpi_definition_id ?? ""} disabled={identityLocked}><option value="">Unlinked metric key</option>{workspace.kpiDefinitions.map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key}</option>)}</select>{identityLocked ? <input type="hidden" name="kpiDefinitionId" value={target?.kpi_definition_id ?? ""} /> : null}</label>
-      <label>Metric key<input name="metricKey" required pattern="[a-z0-9][a-z0-9-]{2,80}" defaultValue={target?.metric_key ?? ""} readOnly={identityLocked} /></label>
-      <label>Target / budget value<input name="targetValue" type="number" step="any" required defaultValue={target?.target_value ?? ""} /></label>
-      <label>Warning value<input name="warningValue" type="number" step="any" defaultValue={target?.warning_value ?? ""} /></label>
+      <label>Scope<select name="locationId" defaultValue={target?.location_id ?? ""} disabled={identityLocked}><option value="">Organization-wide</option>{tenant.locations.filter((location) => location.status === "active").map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select>{identityLocked ? <input type="hidden" name="locationId" value={target?.location_id ?? ""} /> : null}</label>
+      <label>Published KPI<select name="kpiDefinitionId" required value={selectedKpiId} disabled={identityLocked} onChange={(event) => setSelectedKpiId(event.target.value)}><option value="" disabled>Choose KPI</option>{workspace.kpiDefinitions.map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key}</option>)}</select>{identityLocked ? <input type="hidden" name="kpiDefinitionId" value={selectedKpiId} /> : null}</label>
+      <label>Metric key<input name="metricKey" required value={selectedDefinition?.kpi_key ?? target?.metric_key ?? ""} readOnly aria-describedby="target-metric-help" /><small id="target-metric-help">Automatically set by the selected KPI definition.</small></label>
+      <label>Target / budget value ({valueKind})<input name="targetValue" type="number" step="any" required defaultValue={target?.target_value ?? ""} /></label>
+      <label>Warning threshold ({valueKind})<input name="warningValue" type="number" step="any" defaultValue={target?.warning_value ?? ""} /></label>
       <label>Effective from<input name="effectiveFrom" type="date" required defaultValue={target?.effective_from ?? ""} readOnly={identityLocked} /></label>
       <label>Effective to<input name="effectiveTo" type="date" defaultValue={target?.effective_to ?? ""} /></label>
       <label>Lifecycle<select name="lifecycle" defaultValue={target?.lifecycle === "published" ? "published" : "draft"}><option value="draft">Draft</option><option value="published">Published</option></select></label>

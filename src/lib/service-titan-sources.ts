@@ -206,8 +206,10 @@ function base64Url(value: string): string {
 }
 
 export function reportSchemaFingerprint(fields: ServiceTitanReportField[]): string {
-  // Versioned, display-safe, collision-free encoding of the complete canonical schema.
-  return `schema-v2.${base64Url(JSON.stringify(fields.map(({ name, type }) => [name, type])))}`;
+  // ServiceTitan report responses authoritatively expose ordered field names, not types.
+  // Declared types remain validated reducer configuration; observed drift evidence covers
+  // only provider metadata that can be independently observed.
+  return `schema-v3.${base64Url(JSON.stringify(fields.map(({ name }) => name)))}`;
 }
 
 export function reportSourceFingerprint(report: Pick<ServiceTitanReportSource, "connectionId" | "tenantId" | "categoryId" | "reportId" | "owner" | "parameters" | "fields" | "modifiedOn">): string {

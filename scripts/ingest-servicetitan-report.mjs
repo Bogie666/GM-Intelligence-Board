@@ -63,13 +63,13 @@ function requireEnv(name) {
   return value;
 }
 
-function serviceRoleClient() {
+export function serviceRoleClient() {
   const url = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
   const key = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
 }
 
-async function resolveSecret(reference, supabase, organizationId, connectionId) {
+export async function resolveSecret(reference, supabase, organizationId, connectionId) {
   const envMatch = reference.match(ENV_REFERENCE);
   if (envMatch) {
     const raw = process.env[envMatch[1]];
@@ -129,7 +129,7 @@ export async function fetchWithPolicy(url, init, operation) {
   throw new WorkerInputError(`${operation}-failed`, `${operation} failed.`);
 }
 
-async function obtainToken(credentials, environment) {
+export async function obtainToken(credentials, environment) {
   const authBase = environment === "integration" ? "https://auth-integration.servicetitan.io" : "https://auth.servicetitan.io";
   const body = new URLSearchParams({ grant_type: "client_credentials", client_id: credentials.clientId, client_secret: credentials.clientSecret });
   const response = await fetchWithPolicy(`${authBase}/connect/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body }, "oauth");
@@ -141,13 +141,14 @@ async function obtainToken(credentials, environment) {
   return payload.access_token;
 }
 
-async function fetchReport({ credentials, token, connection, source, parameters }) {
+export async function fetchReport({ credentials, token, connection, source, parameters }) {
   const apiBase = connection.environment === "integration" ? "https://api-integration.servicetitan.io" : "https://api.servicetitan.io";
   const encodedTenant = encodeURIComponent(connection.service_titan_tenant_id);
   const encodedCategory = encodeURIComponent(source.category_id);
   const encodedReport = encodeURIComponent(source.report_id);
   const allRows = [];
   let observedFields;
+  let observedSchemaFingerprint;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const url = `${apiBase}/reporting/v2/tenant/${encodedTenant}/report-category/${encodedCategory}/reports/${encodedReport}/data?page=${page}&pageSize=${PAGE_SIZE}&includeTotal=false`;
     const response = await fetchWithPolicy(url, {
@@ -158,14 +159,19 @@ async function fetchReport({ credentials, token, connection, source, parameters 
     let payload;
     try { payload = await response.json(); } catch { throw new WorkerInputError("report-response-invalid", "ServiceTitan report data returned invalid JSON."); }
     const parsed = parseReportDataResponse(payload, source.fields);
-    if (!observedFields) observedFields = parsed.fields;
+    if (!observedFields) {
+      observedFields = parsed.fields;
+      observedSchemaFingerprint = parsed.observedSchemaFingerprint;
+    } else if (observedSchemaFingerprint !== parsed.observedSchemaFingerprint) {
+      throw new WorkerInputError("report-schema-drift", "ServiceTitan report field metadata changed during pagination.");
+    }
     allRows.push(...parsed.rows);
-    if (!parsed.hasMore) return { fields: observedFields, rows: allRows, pageCount: page };
+    if (!parsed.hasMore) return { fields: observedFields, observedSchemaFingerprint, rows: allRows, pageCount: page };
   }
   throw new WorkerInputError("report-page-limit", `ServiceTitan report exceeded the ${MAX_PAGES * PAGE_SIZE} row safety limit.`);
 }
 
-async function exactSingle(query, code, message) {
+export async function exactSingle(query, code, message) {
   const { data, error } = await query.maybeSingle();
   if (error || !data) throw new WorkerInputError(code, message);
   return data;
@@ -254,10 +260,10 @@ async function main() {
       period_start: period.start.toISOString(),
       period_end: period.end.toISOString(),
       observed_at: observedAt.toISOString(),
-      value: reduced.value,
+      value: reduced.decimalValue,
       prior_value: prior?.value ?? null,
-      numerator: reduced.numerator,
-      denominator: reduced.denominator,
+      numerator: reduced.decimalNumerator,
+      denominator: reduced.decimalDenominator,
       status: "valid",
       confidence: "high",
       unmapped_record_count: 0,

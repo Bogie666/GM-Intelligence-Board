@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import Decimal from "decimal.js";
+
+Decimal.set({ precision: 50, rounding: Decimal.ROUND_HALF_UP, toExpNeg: -40, toExpPos: 80 });
 
 const DECIMAL_PATTERN = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
 const PLACEHOLDERS = new Set(["$periodStartIso", "$periodEndIso", "$periodStartDate", "$periodEndDate"]);
@@ -81,7 +84,14 @@ export function parseReportDataResponse(value, expectedFields) {
     }
     return row;
   });
-  return { fields: observedFields, rows, hasMore: payload.hasMore };
+  return { fields: observedFields, rows, hasMore: payload.hasMore, observedSchemaFingerprint: reportFieldNameFingerprint(observedFields) };
+}
+
+export function reportFieldNameFingerprint(fieldNames) {
+  if (!Array.isArray(fieldNames) || fieldNames.some((name) => typeof name !== "string" || !name.trim())) {
+    throw new WorkerInputError("report-fields-invalid", "Observed report field names are invalid.");
+  }
+  return `schema-v3.${Buffer.from(JSON.stringify(fieldNames), "utf8").toString("base64url")}`;
 }
 
 export function toFiniteNumber(value, fieldName) {
@@ -100,29 +110,55 @@ function fieldIndex(fields, name, requiredCode) {
   return index;
 }
 
-function numericColumn(rows, index, name) {
-  return rows.map((row) => toFiniteNumber(row[index], name));
+function toFiniteDecimal(value, fieldName) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+      throw new WorkerInputError("report-value-invalid", `Report field ${fieldName} contains an unsafe numeric value; configure the report to return decimals as strings.`);
+    }
+    return new Decimal(value.toString());
+  }
+  if (typeof value === "string" && value.length <= 120 && DECIMAL_PATTERN.test(value.trim())) {
+    const parsed = new Decimal(value.trim());
+    if (parsed.isFinite()) return parsed;
+  }
+  throw new WorkerInputError("report-value-invalid", `Report field ${fieldName} contains a non-numeric value.`);
+}
+
+function decimalColumn(rows, index, name) {
+  return rows.map((row) => toFiniteDecimal(row[index], name));
+}
+
+function reducedResult(value, numerator = null, denominator = null) {
+  return {
+    value: value.toNumber(),
+    numerator: numerator?.toNumber() ?? null,
+    denominator: denominator?.toNumber() ?? null,
+    decimalValue: value.toFixed(),
+    decimalNumerator: numerator?.toFixed() ?? null,
+    decimalDenominator: denominator?.toFixed() ?? null,
+  };
 }
 
 export function reduceReportRows({ rows, fields, reduction, valueField, numeratorField, denominatorField, valueKind }) {
   if (!Array.isArray(rows) || !Array.isArray(fields)) throw new WorkerInputError("report-data-invalid", "Report data is not an array.");
-  if (reduction === "count") return { value: rows.length, numerator: null, denominator: null };
+  if (reduction === "count") return reducedResult(new Decimal(rows.length));
   if (!rows.length) throw new WorkerInputError("report-empty", "The approved ServiceTitan report returned no rows.");
 
   if (reduction === "ratio") {
     const numeratorIndex = fieldIndex(fields, numeratorField, "numerator-field-required");
     const denominatorIndex = fieldIndex(fields, denominatorField, "denominator-field-required");
-    const numerator = numericColumn(rows, numeratorIndex, numeratorField).reduce((sum, item) => sum + item, 0);
-    const denominator = numericColumn(rows, denominatorIndex, denominatorField).reduce((sum, item) => sum + item, 0);
-    if (denominator === 0) throw new WorkerInputError("ratio-denominator-zero", "The report ratio denominator is zero.");
-    const raw = numerator / denominator;
-    return { value: valueKind === "percent" ? raw * 100 : raw, numerator, denominator };
+    const numerator = decimalColumn(rows, numeratorIndex, numeratorField).reduce((sum, item) => sum.plus(item), new Decimal(0));
+    const denominator = decimalColumn(rows, denominatorIndex, denominatorField).reduce((sum, item) => sum.plus(item), new Decimal(0));
+    if (denominator.isZero()) throw new WorkerInputError("ratio-denominator-zero", "The report ratio denominator is zero.");
+    const raw = numerator.dividedBy(denominator);
+    return reducedResult(valueKind === "percent" ? raw.times(100) : raw, numerator, denominator);
   }
 
   const index = fieldIndex(fields, valueField, "value-field-required");
-  const values = numericColumn(rows, index, valueField);
-  if (reduction === "sum") return { value: values.reduce((sum, item) => sum + item, 0), numerator: null, denominator: null };
-  if (reduction === "average") return { value: values.reduce((sum, item) => sum + item, 0) / values.length, numerator: null, denominator: null };
+  const values = decimalColumn(rows, index, valueField);
+  const sum = values.reduce((total, item) => total.plus(item), new Decimal(0));
+  if (reduction === "sum") return reducedResult(sum);
+  if (reduction === "average") return reducedResult(sum.dividedBy(values.length));
   if (reduction === "latest") {
     throw new WorkerInputError("latest-order-contract-required", "Latest reduction requires a governed provider ordering contract and is disabled by this worker.");
   }

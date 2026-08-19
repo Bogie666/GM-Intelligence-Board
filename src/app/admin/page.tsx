@@ -4,9 +4,10 @@ import { AdminConsole } from "@/components/admin-console";
 import { ProductionAdminConsole } from "@/components/production-admin-console";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
-import { isAdminRole } from "@/lib/auth";
+import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
 import { parseProductionAdminSection } from "@/lib/admin-navigation";
 import { getAppConfig } from "@/lib/env";
+import { loadProductionAdminSettings } from "@/lib/production-admin-settings";
 import { getProductionTenantContext } from "@/lib/tenant-context";
 
 export default async function AdminPage({
@@ -50,5 +51,8 @@ export default async function AdminPage({
   }
 
   if (!isAdminRole(result.tenant.role)) redirect("/");
-  return <ProductionAdminConsole tenant={result.tenant} mode={config.mode} initialSection={initialSection} />;
+  const auth = await getTenantAuthContext();
+  if (!auth.ok || auth.membership.organizationId !== result.tenant.organization.id) redirect("/login?next=/admin");
+  const settingsWorkspace = await loadProductionAdminSettings(auth.supabase, result.tenant.organization.id);
+  return <ProductionAdminConsole tenant={result.tenant} mode={config.mode} initialSection={initialSection} settingsWorkspace={settingsWorkspace} />;
 }

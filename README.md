@@ -33,7 +33,7 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-Use Node 22. Copy `.env.example` to `.env.local` for local staging or demo work. `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and all Domo credentials are server/operator-only. Only the Supabase URL and anon/publishable key may use `NEXT_PUBLIC_*`.
+Use Node 22. Copy `.env.example` to `.env.local` for local staging or demo work. `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and all Domo credentials are server/operator-only. `SUPABASE_URL` must exactly match `NEXT_PUBLIC_SUPABASE_URL`. Only the public Supabase URL and anon/publishable key may use `NEXT_PUBLIC_*`.
 
 ## Staging database foundation
 
