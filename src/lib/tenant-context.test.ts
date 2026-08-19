@@ -3,10 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/auth", () => ({ getTenantAuthContext: vi.fn() }));
 
+import { getBusinessUnitMappingReadiness } from "./business-unit-mapping-readiness";
 import {
   getTenantReadiness,
+  validateBusinessUnitMappingInput,
   validateConnectionCredentialInput,
   validateConnectionInput,
+  validateDivisionInput,
   validateLocationInput,
   validateOrganizationInput,
   validateUuid,
@@ -134,6 +137,140 @@ describe("tenant control-plane validation", () => {
     expect(validateUuid("40d85f1a-10b4-42c9-92ca-5f73bca9178d")).toBe(true);
     expect(validateUuid("40D85F1A-10B4-42C9-92CA-5F73BCA9178D")).toBe(true);
     expect(validateUuid("40d85f1a10b442c992ca5f73bca9178d")).toBe(false);
+  });
+
+  it("normalizes printable division names and enforces case-insensitive uniqueness", () => {
+    expect(validateDivisionInput({ name: "  Residential HVAC  " }, ["Plumbing"])).toEqual({
+      ok: true,
+      value: { name: "Residential HVAC" },
+    });
+
+    const duplicate = validateDivisionInput({ name: " plumbing " }, ["Plumbing"]);
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.fieldErrors).toHaveProperty("name");
+  });
+
+  it.each([
+    "",
+    " ",
+    "x".repeat(81),
+    "Residential\u0000HVAC",
+    "Residential\u0085HVAC",
+    "Not Mapped",
+    "NOT MAPPED",
+    "unmapped",
+    " UnMapped ",
+  ])("rejects unsafe or reserved division name %j", (name) => {
+    const result = validateDivisionInput({ name });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fieldErrors).toHaveProperty("name");
+  });
+
+  it("validates UUID-based division mapping inputs without changing provider identifiers", () => {
+    expect(validateBusinessUnitMappingInput({
+      locationId: " 40d85f1a-10b4-42c9-92ca-5f73bca9178d ",
+      providerBusinessUnitId: "BU-100",
+      divisionId: "50d85f1a-10b4-42c9-92ca-5f73bca9178e",
+    })).toEqual({
+      ok: true,
+      value: {
+        locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d",
+        providerBusinessUnitId: "BU-100",
+        divisionId: "50d85f1a-10b4-42c9-92ca-5f73bca9178e",
+      },
+    });
+
+    for (const input of [
+      { locationId: "not-a-uuid", providerBusinessUnitId: "BU-100", divisionId: "50d85f1a-10b4-42c9-92ca-5f73bca9178e" },
+      { locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d", providerBusinessUnitId: "BU-100", divisionId: "not-a-uuid" },
+      { locationId: "40d85f1a-10b4-42c9-92ca-5f73bca9178d", providerBusinessUnitId: " BU-100 ", divisionId: "50d85f1a-10b4-42c9-92ca-5f73bca9178e" },
+    ]) {
+      expect(validateBusinessUnitMappingInput(input).ok).toBe(false);
+    }
+  });
+});
+
+describe("getBusinessUnitMappingReadiness", () => {
+  const connectionId = "20000000-0000-4000-8000-000000000002";
+  const currentRevision = "30000000-0000-4000-8000-000000000003";
+  const currentUnits = [
+    { connection_id: connectionId, discovery_revision: currentRevision, provider_business_unit_id: "BU-1", active: true },
+    { connection_id: connectionId, discovery_revision: currentRevision, provider_business_unit_id: "BU-2", active: true },
+    { connection_id: connectionId, discovery_revision: currentRevision, provider_business_unit_id: "BU-INACTIVE", active: false },
+    { connection_id: "other-connection", discovery_revision: currentRevision, provider_business_unit_id: "BU-OTHER", active: true },
+  ];
+  const activeDivisionId = "40000000-0000-4000-8000-000000000004";
+  const archivedDivisionId = "50000000-0000-4000-8000-000000000005";
+  const activeLocationId = "60000000-0000-4000-8000-000000000006";
+  const divisions = [
+    { id: activeDivisionId, status: "active" as const },
+    { id: archivedDivisionId, status: "archived" as const },
+  ];
+  const mapping = (providerId: string, overrides: Record<string, unknown> = {}) => ({
+    connection_id: connectionId,
+    discovery_revision: currentRevision,
+    provider_business_unit_id: providerId,
+    location_id: activeLocationId,
+    division_id: activeDivisionId,
+    revoked_at: null,
+    ...overrides,
+  });
+
+  it("is complete only for exact active coverage on one connection and current revision", () => {
+    expect(getBusinessUnitMappingReadiness({
+      connectionId,
+      discoveryRevision: currentRevision,
+      businessUnits: currentUnits,
+      divisions,
+      activeAssignedLocationIds: [activeLocationId],
+      mappings: [
+        mapping("BU-1"),
+        mapping("BU-2"),
+        mapping("BU-1", { discovery_revision: "stale-revision" }),
+        mapping("BU-2", { connection_id: "other-connection" }),
+        mapping("BU-INACTIVE"),
+      ],
+    })).toEqual({
+      activeBusinessUnitCount: 2,
+      activeDivisionCount: 1,
+      mappedBusinessUnitCount: 2,
+      complete: true,
+    });
+  });
+
+  it.each([
+    ["no active divisions", [], [mapping("BU-1"), mapping("BU-2")]],
+    ["missing coverage", divisions, [mapping("BU-1")]],
+    ["duplicate coverage", divisions, [mapping("BU-1"), mapping("BU-1"), mapping("BU-2")]],
+    ["archived division mapping", divisions, [mapping("BU-1"), mapping("BU-2", { division_id: archivedDivisionId })]],
+    ["inactive or unassigned location mapping", divisions, [mapping("BU-1"), mapping("BU-2", { location_id: "70000000-0000-4000-8000-000000000007" })]],
+    ["revoked mapping", divisions, [mapping("BU-1"), mapping("BU-2", { revoked_at: "2026-08-19T00:00:00Z" })]],
+    ["stale mapping", divisions, [mapping("BU-1"), mapping("BU-2", { discovery_revision: "stale-revision" })]],
+  ])("is incomplete for %s", (_label, candidateDivisions, mappings) => {
+    expect(getBusinessUnitMappingReadiness({
+      connectionId,
+      discoveryRevision: currentRevision,
+      businessUnits: currentUnits,
+      divisions: candidateDivisions,
+      activeAssignedLocationIds: [activeLocationId],
+      mappings,
+    }).complete).toBe(false);
+  });
+
+  it("requires at least one current active business unit", () => {
+    expect(getBusinessUnitMappingReadiness({
+      connectionId,
+      discoveryRevision: currentRevision,
+      businessUnits: [],
+      divisions,
+      activeAssignedLocationIds: [activeLocationId],
+      mappings: [],
+    })).toEqual({
+      activeBusinessUnitCount: 0,
+      activeDivisionCount: 1,
+      mappedBusinessUnitCount: 0,
+      complete: false,
+    });
   });
 });
 

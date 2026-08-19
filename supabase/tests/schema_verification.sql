@@ -23,6 +23,7 @@ declare
     'service_titan_discovery_runs',
     'service_titan_business_units',
     'service_titan_business_unit_mappings',
+    'organization_divisions',
     'service_titan_report_sources',
     'service_titan_report_evidence',
     'service_titan_endpoint_recipe_refresh_policies',
@@ -63,7 +64,8 @@ declare
   rpc_managed_tables constant text[] := array[
     'service_titan_connections',
     'service_titan_connection_locations',
-    'service_titan_discovery_runs'
+    'service_titan_discovery_runs',
+    'organization_divisions'
   ];
   missing_tables text[];
   rls_disabled text[];
@@ -276,6 +278,8 @@ begin
 
   if not pg_catalog.has_function_privilege('anon', 'public.get_release_readiness()', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.get_release_readiness()', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('anon', 'public.get_division_release_readiness()', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.get_division_release_readiness()', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('authenticated', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('service_role', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
@@ -313,6 +317,16 @@ begin
      or not pg_catalog.has_function_privilege('authenticated', 'public.replace_service_titan_connection_locations(uuid,uuid,uuid[])', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.replace_service_titan_business_unit_division_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.replace_service_titan_business_unit_division_mappings(uuid,uuid,uuid,jsonb)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.create_organization_division(uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.create_organization_division(uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.rename_organization_division(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.rename_organization_division(uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.set_organization_division_status(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.set_organization_division_status(uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon', 'public.move_organization_division(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.move_organization_division(uuid,uuid,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.enable_original_kpi_catalog(uuid,text[])', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.enable_original_kpi_catalog(uuid,text[])', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.can_view_current_kpi_observation(uuid,uuid,text,bigint,text)', 'EXECUTE')
@@ -322,10 +336,16 @@ begin
 
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_division_release_readiness() readiness;
+  if release_ready is null
+     or release_marker is distinct from '20260819001700_tenant_managed_divisions' then
+    raise exception 'division release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
-  if release_ready is distinct from false
-     or release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
-    raise exception 'release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
+    raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
   end if;
 
   select count(*) into unexpected_anon_function_count
@@ -333,7 +353,10 @@ begin
   join pg_catalog.pg_namespace namespace on namespace.oid = function.pronamespace
   where namespace.nspname = 'public'
     and pg_catalog.has_function_privilege('anon', function.oid, 'EXECUTE')
-    and function.oid <> 'public.get_release_readiness()'::pg_catalog.regprocedure;
+    and function.oid not in (
+      'public.get_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_division_release_readiness()'::pg_catalog.regprocedure
+    );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
   end if;
@@ -345,6 +368,7 @@ begin
     and pg_catalog.has_function_privilege('authenticated', function.oid, 'EXECUTE')
     and not (function.oid = any (array[
       'public.get_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_division_release_readiness()'::pg_catalog.regprocedure,
       'public.is_active_organization_member(uuid)'::pg_catalog.regprocedure,
       'public.has_organization_role(uuid,text[])'::pg_catalog.regprocedure,
       'public.can_read_profile(uuid)'::pg_catalog.regprocedure,
@@ -358,6 +382,11 @@ begin
       'public.request_service_titan_business_unit_discovery(uuid,uuid)'::pg_catalog.regprocedure,
       'public.replace_service_titan_connection_locations(uuid,uuid,uuid[])'::pg_catalog.regprocedure,
       'public.replace_service_titan_business_unit_mappings(uuid,uuid,uuid,jsonb)'::pg_catalog.regprocedure,
+      'public.replace_service_titan_business_unit_division_mappings(uuid,uuid,uuid,jsonb)'::pg_catalog.regprocedure,
+      'public.create_organization_division(uuid,text)'::pg_catalog.regprocedure,
+      'public.rename_organization_division(uuid,uuid,text)'::pg_catalog.regprocedure,
+      'public.set_organization_division_status(uuid,uuid,text)'::pg_catalog.regprocedure,
+      'public.move_organization_division(uuid,uuid,text)'::pg_catalog.regprocedure,
       'public.enable_original_kpi_catalog(uuid,text[])'::pg_catalog.regprocedure,
       'public.has_portfolio_access()'::pg_catalog.regprocedure,
       'public.can_access_portfolio_brand(uuid)'::pg_catalog.regprocedure,
@@ -379,6 +408,7 @@ begin
       ('service_titan_discovery_runs', 'st_discovery_runs_admin_read'),
       ('service_titan_business_units', 'st_business_units_admin_read'),
       ('service_titan_business_unit_mappings', 'st_business_unit_mappings_admin_read'),
+      ('organization_divisions', 'organization_divisions_member_read'),
       ('original_kpi_catalog', 'original_kpi_catalog_authenticated_read'),
       ('custom_kpi_binding_evidence', 'custom_kpi_binding_evidence_admin_read'),
       ('kpi_observations', 'kpi_observations_current_role_read')
@@ -1262,6 +1292,9 @@ do $discovery_mapping_rotation$
 declare
   v_connection_id uuid;
   discovery_revision uuid;
+  hvac_division_id uuid;
+  plumbing_division_id uuid;
+  custom_division_id uuid;
   denied boolean := false;
 begin
   select connection.id into v_connection_id from public.service_titan_connections connection
@@ -1287,6 +1320,56 @@ begin
     'a0000000-0000-4000-8000-000000000001', v_connection_id, discovery_revision,
     '[{"locationId":"a2000000-0000-4000-8000-000000000001","providerBusinessUnitId":"1001","trade":"hvac"},{"locationId":"a2000000-0000-4000-8000-000000000001","providerBusinessUnitId":"1002","trade":"plumbing"}]'::jsonb
   ) <> 2 then raise exception 'valid normalized business-unit mapping replacement failed'; end if;
+
+  select division.id into hvac_division_id from public.organization_divisions division
+  where division.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and division.name = 'HVAC' and division.status = 'active';
+  select division.id into plumbing_division_id from public.organization_divisions division
+  where division.organization_id = 'a0000000-0000-4000-8000-000000000001'
+    and division.name = 'Plumbing' and division.status = 'active';
+  if hvac_division_id is null or plumbing_division_id is null then
+    raise exception 'legacy mapping adapter did not materialize canonical tenant divisions';
+  end if;
+  if public.replace_service_titan_business_unit_division_mappings(
+    'a0000000-0000-4000-8000-000000000001', v_connection_id, discovery_revision,
+    pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('locationId', 'a2000000-0000-4000-8000-000000000001', 'providerBusinessUnitId', '1001', 'divisionId', hvac_division_id),
+      pg_catalog.jsonb_build_object('locationId', 'a2000000-0000-4000-8000-000000000001', 'providerBusinessUnitId', '1002', 'divisionId', plumbing_division_id)
+    )
+  ) <> 2 then raise exception 'division-native mapping replacement failed'; end if;
+
+  denied := false;
+  begin
+    perform public.set_organization_division_status(
+      'a0000000-0000-4000-8000-000000000001', hvac_division_id, 'archived'
+    );
+  exception when object_not_in_prerequisite_state then denied := true;
+  end;
+  if not denied then raise exception 'mapped division was allowed to archive'; end if;
+
+  custom_division_id := public.create_organization_division(
+    'a0000000-0000-4000-8000-000000000001', 'Commercial'
+  );
+  if not public.rename_organization_division(
+    'a0000000-0000-4000-8000-000000000001', custom_division_id, 'Commercial Service'
+  ) then raise exception 'division rename failed'; end if;
+  perform public.move_organization_division(
+    'a0000000-0000-4000-8000-000000000001', custom_division_id, 'up'
+  );
+  if not public.set_organization_division_status(
+    'a0000000-0000-4000-8000-000000000001', custom_division_id, 'archived'
+  ) or not public.set_organization_division_status(
+    'a0000000-0000-4000-8000-000000000001', custom_division_id, 'active'
+  ) then raise exception 'unmapped division archive/restore failed'; end if;
+  denied := false;
+  begin
+    perform public.create_organization_division(
+      'a0000000-0000-4000-8000-000000000001', 'commercial service'
+    );
+  exception when unique_violation then denied := true;
+  end;
+  if not denied then raise exception 'case-insensitive duplicate division name was accepted'; end if;
+
   if not public.rotate_service_titan_connection_credentials(
     'a0000000-0000-4000-8000-000000000001', v_connection_id,
     'schema-rotated-client-id', 'schema-rotated-client-secret', 'schema-rotated-st-app-key'
@@ -1385,7 +1468,9 @@ begin
     raise exception 'resolver accepted another connection''s Vault UUID';
   end if;
 
-  active_tenant_count := 2;
+  select pg_catalog.count(*) into active_tenant_count
+  from public.organizations organization
+  where organization.status = 'active';
   tenant_count := public.grant_owner_access_to_all_tenants('10000000-0000-4000-8000-000000000001');
   if tenant_count <> active_tenant_count then
     raise exception 'operator-wide owner grant returned %, expected %', tenant_count, active_tenant_count;
@@ -1421,7 +1506,9 @@ begin
     );
   end loop;
 
-  active_brand_count := 2;
+  select pg_catalog.count(*) into active_brand_count
+  from public.organizations organization
+  where organization.status = 'active';
   if (
     select count(*) from public.portfolio_organizations attachment
     where attachment.portfolio_id = 'c1000000-0000-4000-8000-000000000001' and attachment.status = 'active'
@@ -1488,8 +1575,8 @@ begin
   if not denied then raise exception 'non-QA portfolio attachment deletion was not denied'; end if;
 
   select readiness.ready, readiness.release_marker into release_ready, release_marker
-  from public.get_release_readiness() readiness;
-  if release_ready is distinct from true or release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
+  from public.get_division_release_readiness() readiness;
+  if release_ready is distinct from true or release_marker is distinct from '20260819001700_tenant_managed_divisions' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
 end
@@ -1596,6 +1683,7 @@ reset role;
 -- anon can execute only the non-secret readiness RPC; this SELECT itself proves execution.
 set local role anon;
 select * from public.get_release_readiness();
+select * from public.get_division_release_readiness();
 reset role;
 
 -- Human-readable summaries are useful in CI logs after all assertions pass.

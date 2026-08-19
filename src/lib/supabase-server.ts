@@ -13,7 +13,7 @@ export interface DatabaseHealth {
 
 let healthClient: SupabaseClient | undefined;
 let healthClientIdentity = "";
-const EXPECTED_SCHEMA_RELEASE = "20260819001600_enterprise_admin_hardening";
+const EXPECTED_SCHEMA_RELEASE = "20260819001700_tenant_managed_divisions";
 
 function publicServerEnvironment(): { url: string; anonKey: string } | undefined {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
@@ -52,13 +52,12 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealth> {
     };
   }
 
-  const expectedRelease = EXPECTED_SCHEMA_RELEASE;
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
 
   try {
-    const { data, error } = await client.rpc("get_release_readiness").abortSignal(controller.signal);
+    const { data, error } = await client.rpc("get_division_release_readiness").abortSignal(controller.signal);
     const latencyMs = Date.now() - startedAt;
     if (error) {
       return {
@@ -72,7 +71,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealth> {
 
     const row = Array.isArray(data) ? data[0] : data;
     const releaseMarker = typeof row?.release_marker === "string" ? row.release_marker : undefined;
-    const schemaReady = row?.ready === true && releaseMarker === expectedRelease;
+    const schemaReady = row?.ready === true && releaseMarker === EXPECTED_SCHEMA_RELEASE;
     return {
       configured: true,
       reachable: true,

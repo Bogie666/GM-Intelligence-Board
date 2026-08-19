@@ -28,11 +28,12 @@ export interface AdminSetupSignals {
   hasValidatedConnection: boolean;
   assignedActiveLocationCount: number;
   discoveredBusinessUnitCount: number;
+  activeDivisionCount: number;
   mappedBusinessUnitCount: number;
 }
 
 export interface AdminSetupMilestone {
-  id: "locations" | "credentials" | "validation" | "assignments" | "discovery" | "mappings";
+  id: "locations" | "credentials" | "validation" | "assignments" | "discovery" | "divisions" | "mappings";
   complete: boolean;
 }
 
@@ -47,6 +48,12 @@ export function getAdminSetupMilestones(signals: AdminSetupSignals): AdminSetupM
     { id: "validation", complete: signals.hasValidatedConnection },
     { id: "assignments", complete: signals.assignedActiveLocationCount > 0 },
     { id: "discovery", complete: signals.discoveredBusinessUnitCount > 0 },
-    { id: "mappings", complete: signals.mappedBusinessUnitCount > 0 },
+    { id: "divisions", complete: signals.activeDivisionCount > 0 },
+    {
+      id: "mappings",
+      complete:
+        signals.discoveredBusinessUnitCount > 0 &&
+        signals.mappedBusinessUnitCount === signals.discoveredBusinessUnitCount,
+    },
   ];
 }

@@ -10,8 +10,10 @@ import {
   executeServiceTitanValidation,
 } from "@/lib/servicetitan-workers";
 import {
+  validateBusinessUnitMappingInput,
   validateConnectionCredentialInput,
   validateCredentialRotationInput,
+  validateDivisionInput,
   validateLocationInput,
   validateOrganizationInput,
   validateUuid,
@@ -40,7 +42,7 @@ function input(formData: FormData, key: string): string {
 
 function databaseError(operation: string, error: DatabaseError): AdminActionState {
   if (error?.code === "23505") {
-    return { status: "error", message: `${operation} was not saved because that key or tenant ID is already in use.` };
+    return { status: "error", message: `${operation} was not saved because that value is already in use. Division names and ServiceTitan tenant IDs must be unique within the organization.` };
   }
   return { status: "error", message: `${operation} could not be saved by the tenant database. No success is being reported.` };
 }
@@ -207,6 +209,92 @@ export async function archiveLocationAction(
   if (!data) return { status: "error", message: "Location was not archived because it was not found or was already archived." };
   refreshTenantPages();
   return { status: "success", message: "Location archived. Historical records remain intact." };
+}
+
+export async function createDivisionAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) return writable.state;
+  const validation = validateDivisionInput({ name: input(formData, "name") });
+  if (!validation.ok) {
+    return { status: "error", message: "Correct the division name and try again.", fieldErrors: validation.fieldErrors };
+  }
+  const { data, error } = await writable.supabase.supabase.rpc("create_organization_division", {
+    p_organization_id: writable.organizationId,
+    p_name: validation.value.name,
+  });
+  if (error || typeof data !== "string" || !validateUuid(data)) return databaseError("Division", error);
+  refreshTenantPages();
+  return { status: "success", message: `${validation.value.name} division created.` };
+}
+
+export async function renameDivisionAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) return writable.state;
+  const divisionId = input(formData, "divisionId").trim();
+  if (!validateUuid(divisionId)) return { status: "error", message: "The division identifier is invalid." };
+  const validation = validateDivisionInput({ name: input(formData, "name") });
+  if (!validation.ok) {
+    return { status: "error", message: "Correct the division name and try again.", fieldErrors: validation.fieldErrors };
+  }
+  const { data, error } = await writable.supabase.supabase.rpc("rename_organization_division", {
+    p_organization_id: writable.organizationId,
+    p_division_id: divisionId,
+    p_name: validation.value.name,
+  });
+  if (error || data !== true) return databaseError("Division", error);
+  refreshTenantPages();
+  return { status: "success", message: `Division renamed to ${validation.value.name}.` };
+}
+
+export async function setDivisionStatusAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) return writable.state;
+  const divisionId = input(formData, "divisionId").trim();
+  const status = input(formData, "status").trim();
+  if (!validateUuid(divisionId) || (status !== "active" && status !== "archived")) {
+    return { status: "error", message: "The division status request is invalid." };
+  }
+  const { data, error } = await writable.supabase.supabase.rpc("set_organization_division_status", {
+    p_organization_id: writable.organizationId,
+    p_division_id: divisionId,
+    p_status: status,
+  });
+  if (error?.code === "55000") {
+    return { status: "error", message: "Reassign or unmap every active business unit before archiving this division." };
+  }
+  if (error || data !== true) return databaseError("Division status", error);
+  refreshTenantPages();
+  return { status: "success", message: status === "active" ? "Division restored." : "Division archived. Historical mappings remain intact." };
+}
+
+export async function moveDivisionAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) return writable.state;
+  const divisionId = input(formData, "divisionId").trim();
+  const direction = input(formData, "direction").trim();
+  if (!validateUuid(divisionId) || (direction !== "up" && direction !== "down")) {
+    return { status: "error", message: "The division move request is invalid." };
+  }
+  const { data, error } = await writable.supabase.supabase.rpc("move_organization_division", {
+    p_organization_id: writable.organizationId,
+    p_division_id: divisionId,
+    p_direction: direction,
+  });
+  if (error || typeof data !== "boolean") return databaseError("Division order", error);
+  refreshTenantPages();
+  return { status: "success", message: data ? "Division order updated." : `Division is already ${direction === "up" ? "first" : "last"}.` };
 }
 
 export async function createConnectionAction(
@@ -521,40 +609,57 @@ export async function replaceBusinessUnitMappingsAction(
   if (writable.ok === false) return writable.state;
   const connectionId = input(formData, "connectionId").trim();
   const discoveryRevision = input(formData, "discoveryRevision").trim();
-  const providerIds = repeatedInput(formData, "providerBusinessUnitId");
-  const locationIds = repeatedInput(formData, "mappedLocationId");
-  const trades = repeatedInput(formData, "trade");
+  let providerIds = repeatedInput(formData, "providerBusinessUnitId");
+  let locationIds = repeatedInput(formData, "mappedLocationId");
+  let divisionIds = repeatedInput(formData, "divisionId");
+  const bulkPayload = input(formData, "bulkMappings").trim();
+  if (bulkPayload) {
+    if (bulkPayload.length > 8_000_000) {
+      return { status: "error", message: "The bulk mapping file exceeds the 8 MB safety limit." };
+    }
+    try {
+      const parsed: unknown = JSON.parse(bulkPayload);
+      if (!Array.isArray(parsed)) throw new Error("array required");
+      providerIds = parsed.map((item) => typeof item === "object" && item !== null && "providerBusinessUnitId" in item
+        ? String(item.providerBusinessUnitId)
+        : "");
+      locationIds = parsed.map((item) => typeof item === "object" && item !== null && "locationId" in item
+        ? String(item.locationId)
+        : "");
+      divisionIds = parsed.map((item) => typeof item === "object" && item !== null && "divisionId" in item
+        ? String(item.divisionId)
+        : "");
+    } catch {
+      return { status: "error", message: "The bulk mapping file is not valid GM Intelligence mapping JSON." };
+    }
+  }
   if (!validateUuid(connectionId) || !validateUuid(discoveryRevision)) {
     return { status: "error", message: "The connection or discovery revision identifier is invalid." };
   }
   if (input(formData, "confirmMappings") !== "yes") {
     return { status: "error", message: "Confirm that this submission will replace every active business-unit mapping for the connection." };
   }
-  if (providerIds.length !== locationIds.length || providerIds.length !== trades.length || providerIds.length > 10000) {
+  if (providerIds.length !== locationIds.length || providerIds.length !== divisionIds.length || providerIds.length > 10000) {
     return { status: "error", message: "The business-unit mapping selection is incomplete or too large." };
   }
 
-  const mappings: Array<{ locationId: string; providerBusinessUnitId: string; trade: string }> = [];
+  const mappings: Array<{ locationId: string; providerBusinessUnitId: string; divisionId: string }> = [];
   const selectedProviderIds = new Set<string>();
   for (let index = 0; index < providerIds.length; index += 1) {
     const providerBusinessUnitId = providerIds[index] ?? "";
     const locationId = (locationIds[index] ?? "").trim();
-    const trade = (trades[index] ?? "").trim();
-    if (!locationId && !trade) continue;
-    if (
-      !providerBusinessUnitId || providerBusinessUnitId !== providerBusinessUnitId.trim() ||
-      providerBusinessUnitId.length > 160 || /[\u0000-\u001f\u007f]/.test(providerBusinessUnitId) ||
-      !validateUuid(locationId) || !["hvac", "plumbing", "electrical", "other"].includes(trade) ||
-      selectedProviderIds.has(providerBusinessUnitId)
-    ) {
+    const divisionId = (divisionIds[index] ?? "").trim();
+    if (!locationId && !divisionId) continue;
+    const validation = validateBusinessUnitMappingInput({ locationId, providerBusinessUnitId, divisionId });
+    if (!validation.ok || selectedProviderIds.has(providerBusinessUnitId)) {
       return { status: "error", message: "One or more business-unit mappings are invalid or incomplete." };
     }
     selectedProviderIds.add(providerBusinessUnitId);
-    mappings.push({ locationId, providerBusinessUnitId, trade });
+    mappings.push(validation.value);
   }
 
   const { data, error } = await writable.supabase.supabase.rpc(
-    "replace_service_titan_business_unit_mappings",
+    "replace_service_titan_business_unit_division_mappings",
     {
       p_organization_id: writable.organizationId,
       p_connection_id: connectionId,

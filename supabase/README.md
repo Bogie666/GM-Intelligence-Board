@@ -20,7 +20,10 @@ This directory contains version-controlled schema artifacts for the isolated GM 
 - `migrations/20260818001100_portfolio_audit_trigger_fix.sql` — table-safe portfolio audit identity comparisons.
 - `migrations/20260818001200_atomic_qa_portfolio_cleanup.sql` — QA-only terminal portfolio-membership cleanup with immutable historical subject IDs.
 - `migrations/20260818001300_admin_credential_vault.sql` — authenticated owner/admin ServiceTitan credential encryption in Supabase Vault, governed service-role resolution, U.S.-timezone enforcement, rotation, and retirement.
-- `migrations/20260818001400_configuration_revision_race_guard.sql` — compare-and-set credential revisions and serialized observation writes that fail closed across concurrent credential rotation; current release marker.
+- `migrations/20260818001400_configuration_revision_race_guard.sql` — compare-and-set credential revisions and serialized observation writes that fail closed across concurrent credential rotation.
+- `migrations/20260819001500_servicetitan_discovery_kpi_catalog.sql` — tenant-scoped ServiceTitan discovery revisions, governed business-unit mappings, and the original 36-KPI catalog.
+- `migrations/20260819001600_enterprise_admin_hardening.sql` — Champions Group portfolio/admin hardening and the legacy rolling-release readiness contract.
+- `migrations/20260819001700_tenant_managed_divisions.sql` — organization-managed divisions, division-native business-unit mapping, stale-discovery revocation, bulk-safe mapping contracts, and the division-aware release gate.
 - `tests/schema_verification.sql` — catalog assertions plus rollback-only service-role/bootstrap and authenticated cross-tenant RLS behavior checks.
 
 The migration models organizations, locations, Auth-linked profiles, memberships/RBAC, credential-free ServiceTitan metadata and exact location assignments, governed saved-report sources, source-fingerprint evidence, versioned custom KPI definitions and exact location bindings, append-only observations, targets, layouts, and append-only audit events.
@@ -35,7 +38,9 @@ Approval and membership authorization are also enforced by database triggers rat
 
 ## Release readiness
 
-Migration `20260818001400` records the non-secret marker `20260818001400_configuration_revision_race_guard` in an RLS-protected table with no `anon` or `authenticated` table privileges. The read-only `get_release_readiness()` RPC exposes only `ready` and `release_marker` and is executable by low-privilege API roles. Readiness also requires the active Champions Group portfolio, at least one active portfolio owner, and attachment coverage for every active brand. The application is compiled to require that exact marker; a successful HTTP connection alone is not schema readiness.
+Migration `20260819001700` records the non-secret marker `20260819001700_tenant_managed_divisions` in an RLS-protected table with no `anon` or `authenticated` table privileges. The new read-only `get_division_release_readiness()` RPC exposes only `ready` and `release_marker`; the production application checks this gate first. During the DB-first rolling cutover, the legacy `get_release_readiness()` RPC deliberately continues to return marker `20260819001600_enterprise_admin_hardening`, allowing old web instances to remain healthy until Vercel promotion completes. Both gates require the active Champions Group portfolio, at least one active portfolio owner, attachment coverage for every active brand, and the complete 36-KPI catalog. The 017 gate additionally denies reserved pseudo-divisions such as “Not mapped.” A successful HTTP connection alone is not schema readiness.
+
+Tenant setup readiness is evaluated separately from release readiness. Every enabled ServiceTitan connection must have a latest successful discovery from its current credential revision, and every active unit in that discovery must have exactly one non-revoked mapping to an actively assigned location and active tenant division. “Not mapped” is the absence of a mapping, never a division. The interactive mapper is capped at 500 active units; larger inventories use the governed bulk workflow.
 
 ## Auth and first-organization bootstrap
 
@@ -53,7 +58,7 @@ Use the operator script from the repository root. Keep secrets in the process en
 ```bash
 BOOTSTRAP_USER_PASSWORD='use-an-operator-supplied-random-password' \
 NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \
-SUPABASE_SERVICE_ROLE_KEY='operator-local-service-role-key' \
+SUPABASE_SERVICE_ROLE_KEY='<operator-local-service-role-key>' \
 GM_PLATFORM_OWNER_PROFILE_ID='approved-platform-owner-profile-uuid' \
 GM_DEFAULT_PORTFOLIO_ID='c1000000-0000-4000-8000-000000000001' \
 npx --yes --package=node@22.23.2 --call "node scripts/bootstrap-tenant.mjs \
@@ -74,7 +79,7 @@ Removal is deliberately not a general tenant-deletion feature. `remove_empty_qa_
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL='https://PROJECT.supabase.co' \
-SUPABASE_SERVICE_ROLE_KEY='operator-local-service-role-key' \
+SUPABASE_SERVICE_ROLE_KEY='<operator-local-service-role-key>' \
 GM_PLATFORM_OWNER_PROFILE_ID='approved-platform-owner-profile-uuid' \
 GM_DEFAULT_PORTFOLIO_ID='c1000000-0000-4000-8000-000000000001' \
 npx --yes --package=node@22.23.2 --call "node scripts/remove-qa-tenant.mjs \

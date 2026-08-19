@@ -19,8 +19,22 @@ vi.mock("@/lib/auth", () => ({
 }));
 vi.mock("@/lib/env", () => ({ getAppConfig: mocks.getAppConfig }));
 vi.mock("@/lib/tenant-context", () => ({
+  validateBusinessUnitMappingInput: (input: Record<string, unknown>) => {
+    const locationId = typeof input.locationId === "string" ? input.locationId.trim() : "";
+    const providerBusinessUnitId = typeof input.providerBusinessUnitId === "string" ? input.providerBusinessUnitId : "";
+    const divisionId = typeof input.divisionId === "string" ? input.divisionId.trim() : "";
+    return /^[0-9a-f-]{36}$/i.test(locationId) && /^[0-9a-f-]{36}$/i.test(divisionId) && providerBusinessUnitId === providerBusinessUnitId.trim() && providerBusinessUnitId.length > 0
+      ? { ok: true, value: { locationId, providerBusinessUnitId, divisionId } }
+      : { ok: false, fieldErrors: { mapping: "invalid" } };
+  },
   validateConnectionCredentialInput: vi.fn(),
   validateCredentialRotationInput: vi.fn(),
+  validateDivisionInput: (input: Record<string, unknown>) => {
+    const name = typeof input.name === "string" ? input.name.trim() : "";
+    return name && name.length <= 80 && !["not mapped", "unmapped"].includes(name.toLowerCase())
+      ? { ok: true, value: { name } }
+      : { ok: false, fieldErrors: { name: "invalid" } };
+  },
   validateLocationInput: vi.fn(),
   validateOrganizationInput: vi.fn(),
   validateUuid: (value: unknown) => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value),
@@ -34,13 +48,19 @@ vi.mock("@/lib/servicetitan-workers", () => ({
 }));
 
 import {
+  createDivisionAction,
+  replaceBusinessUnitMappingsAction,
   runBusinessUnitDiscoveryAction,
+  setDivisionStatusAction,
   validateServiceTitanConnectionAction,
 } from "./actions";
 
 const ORGANIZATION_ID = "10000000-0000-4000-8000-000000000001";
 const CONNECTION_ID = "20000000-0000-4000-8000-000000000002";
 const DISCOVERY_RUN_ID = "30000000-0000-4000-8000-000000000003";
+const LOCATION_ID = "50000000-0000-4000-8000-000000000005";
+const DIVISION_ID = "60000000-0000-4000-8000-000000000006";
+const DISCOVERY_REVISION = "70000000-0000-4000-8000-000000000007";
 const INITIAL_STATE = { status: "idle" as const, message: "" };
 
 function formData() {
@@ -167,5 +187,66 @@ describe("in-product ServiceTitan server actions", () => {
       errorCode: "discovery_failed",
     });
     expect(JSON.stringify(state)).not.toMatch(/raw provider payload|internal revision/i);
+  });
+
+  it("creates a normalized tenant division through the narrow authenticated RPC", async () => {
+    const userRpc = vi.fn().mockResolvedValue({ data: DIVISION_ID, error: null });
+    mocks.getTenantAuthContext.mockResolvedValue(authenticatedContext("admin", userRpc));
+    const data = new FormData();
+    data.set("name", "  Residential HVAC  ");
+
+    const state = await createDivisionAction(INITIAL_STATE, data);
+
+    expect(userRpc).toHaveBeenCalledWith("create_organization_division", {
+      p_organization_id: ORGANIZATION_ID,
+      p_name: "Residential HVAC",
+    });
+    expect(state).toEqual({ status: "success", message: "Residential HVAC division created." });
+  });
+
+  it("rejects the reserved Not Mapped division name before any database call", async () => {
+    const userRpc = vi.fn();
+    mocks.getTenantAuthContext.mockResolvedValue(authenticatedContext("owner", userRpc));
+    const data = new FormData();
+    data.set("name", "Not Mapped");
+
+    const state = await createDivisionAction(INITIAL_STATE, data);
+
+    expect(state).toMatchObject({ status: "error", fieldErrors: { name: "invalid" } });
+    expect(userRpc).not.toHaveBeenCalled();
+  });
+
+  it("replaces mappings through the division-native RPC with exact submitted pairs", async () => {
+    const userRpc = vi.fn().mockResolvedValue({ data: 1, error: null });
+    mocks.getTenantAuthContext.mockResolvedValue(authenticatedContext("admin", userRpc));
+    const data = new FormData();
+    data.set("connectionId", CONNECTION_ID);
+    data.set("discoveryRevision", DISCOVERY_REVISION);
+    data.set("confirmMappings", "yes");
+    data.append("providerBusinessUnitId", "BU-101");
+    data.append("mappedLocationId", LOCATION_ID);
+    data.append("divisionId", DIVISION_ID);
+
+    const state = await replaceBusinessUnitMappingsAction(INITIAL_STATE, data);
+
+    expect(userRpc).toHaveBeenCalledWith("replace_service_titan_business_unit_division_mappings", {
+      p_organization_id: ORGANIZATION_ID,
+      p_connection_id: CONNECTION_ID,
+      p_discovery_revision: DISCOVERY_REVISION,
+      p_mappings: [{ locationId: LOCATION_ID, providerBusinessUnitId: "BU-101", divisionId: DIVISION_ID }],
+    });
+    expect(state).toEqual({ status: "success", message: "1 current business-unit mapping saved against the reviewed discovery revision." });
+  });
+
+  it("returns an actionable message when an in-use division cannot be archived", async () => {
+    const userRpc = vi.fn().mockResolvedValue({ data: null, error: { code: "55000", message: "blocked" } });
+    mocks.getTenantAuthContext.mockResolvedValue(authenticatedContext("owner", userRpc));
+    const data = new FormData();
+    data.set("divisionId", DIVISION_ID);
+    data.set("status", "archived");
+
+    const state = await setDivisionStatusAction(INITIAL_STATE, data);
+
+    expect(state).toEqual({ status: "error", message: "Reassign or unmap every active business unit before archiving this division." });
   });
 });

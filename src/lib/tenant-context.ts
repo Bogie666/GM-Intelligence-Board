@@ -8,6 +8,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SECRET_REFERENCE_PATTERN = /^(?:gcp-secret:\/\/projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/secrets\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/versions\/(?:latest|[1-9][0-9]*)|env:\/\/[A-Z][A-Z0-9_]{1,127})$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+const UNICODE_CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const RESERVED_DIVISION_NAMES = new Set(["not mapped", "unmapped"]);
 const UNITED_STATES_TIMEZONES = new Set([
   "America/New_York",
   "America/Chicago",
@@ -56,6 +58,17 @@ export interface CredentialRotationInput {
   clientId: string;
   clientSecret: string;
   appKey: string;
+}
+
+export interface DivisionInput {
+  name: string;
+}
+
+/** Division-based mapping payload kept separate from the legacy trade mapping contract. */
+export interface BusinessUnitMappingInput {
+  locationId: string;
+  providerBusinessUnitId: string;
+  divisionId: string;
 }
 
 export interface TenantOrganization {
@@ -126,7 +139,16 @@ export interface ServiceTitanBusinessUnit {
   last_seen_at: string;
 }
 
-export type ServiceTitanTrade = "hvac" | "plumbing" | "electrical" | "other";
+export interface OrganizationDivision {
+  id: string;
+  organization_id: string;
+  name: string;
+  status: "active" | "archived";
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
 
 export interface ServiceTitanBusinessUnitMapping {
   id: string;
@@ -134,7 +156,7 @@ export interface ServiceTitanBusinessUnitMapping {
   connection_id: string;
   location_id: string;
   provider_business_unit_id: string;
-  trade: ServiceTitanTrade;
+  division_id: string;
   discovery_revision: string;
   discovery_run_id: string;
   mapped_at: string;
@@ -169,6 +191,7 @@ export interface OriginalKpiDefinitionState {
 }
 
 export interface ProductionAdminConfiguration {
+  divisions: OrganizationDivision[];
   discoveryRuns: ServiceTitanDiscoveryRun[];
   businessUnits: ServiceTitanBusinessUnit[];
   businessUnitMappings: ServiceTitanBusinessUnitMapping[];
@@ -191,6 +214,8 @@ export interface ProductionKpiStatus {
   title: string;
   section: "executive" | "revenue" | "calls" | "appointments" | "sales" | "membership";
   valueKind: "currency" | "number" | "percent" | "ratio";
+  subtitle: string;
+  sourceSystem: OriginalKpiCatalogItem["source_system"];
   locationId: string | null;
   locationName: string;
   sourceStatus: string;
@@ -244,6 +269,53 @@ function validateName(value: string, field: string, maximum: number, errors: Rec
 
 export function validateUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+export function validateDivisionInput(
+  input: Record<string, unknown>,
+  existingNames: string[] = [],
+): ValidationResult<DivisionInput> {
+  const name = text(input.name);
+  const normalizedName = name.toLocaleLowerCase("en-US");
+  const fieldErrors: Record<string, string> = {};
+
+  if (!name || name.length > 80 || UNICODE_CONTROL_CHARACTER_PATTERN.test(name)) {
+    fieldErrors.name = "Division name must contain 1 to 80 printable characters.";
+  } else if (RESERVED_DIVISION_NAMES.has(normalizedName)) {
+    fieldErrors.name = "Choose a division name other than Not Mapped or Unmapped.";
+  } else if (existingNames.some((existing) => text(existing).toLocaleLowerCase("en-US") === normalizedName)) {
+    fieldErrors.name = "A division with this name already exists.";
+  }
+
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors }
+    : { ok: true, value: { name } };
+}
+
+export function validateBusinessUnitMappingInput(
+  input: Record<string, unknown>,
+): ValidationResult<BusinessUnitMappingInput> {
+  const locationId = text(input.locationId);
+  const divisionId = text(input.divisionId);
+  const providerBusinessUnitId = typeof input.providerBusinessUnitId === "string"
+    ? input.providerBusinessUnitId
+    : "";
+  const fieldErrors: Record<string, string> = {};
+
+  if (!validateUuid(locationId)) fieldErrors.locationId = "Choose a valid location.";
+  if (!validateUuid(divisionId)) fieldErrors.divisionId = "Choose a valid division.";
+  if (
+    !providerBusinessUnitId ||
+    providerBusinessUnitId !== providerBusinessUnitId.trim() ||
+    providerBusinessUnitId.length > 160 ||
+    UNICODE_CONTROL_CHARACTER_PATTERN.test(providerBusinessUnitId)
+  ) {
+    fieldErrors.providerBusinessUnitId = "The ServiceTitan business-unit identifier is invalid.";
+  }
+
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors }
+    : { ok: true, value: { locationId, providerBusinessUnitId, divisionId } };
 }
 
 export function validateOrganizationInput(input: Record<string, unknown>): ValidationResult<OrganizationInput> {
@@ -440,7 +512,7 @@ async function loadProductionKpis(
 ): Promise<ProductionKpiStatus[] | null> {
   const [catalogResult, definitionsResult, bindingsResult] = await Promise.all([
     supabase.from("original_kpi_catalog")
-      .select("kpi_key, title, section, value_kind")
+      .select("kpi_key, title, section, value_kind, subtitle, source_system")
       .eq("catalog_version", 1),
     supabase.from("custom_kpi_definitions")
       .select("id, kpi_key, title, section, value_kind, stale_after_hours, external_source")
@@ -454,6 +526,7 @@ async function loadProductionKpis(
   const catalog = catalogResult.data as Array<{
     kpi_key: string; title: string; section: ProductionKpiStatus["section"];
     value_kind: ProductionKpiStatus["valueKind"];
+    subtitle: string; source_system: ProductionKpiStatus["sourceSystem"];
   }>;
   const definitions = definitionsResult.data as Array<{
     id: string; kpi_key: string; title: string; section: ProductionKpiStatus["section"];
@@ -465,7 +538,7 @@ async function loadProductionKpis(
     canonical_source_fingerprint: string | null;
   }>;
   const observationResults = await Promise.all(bindings.map((binding) => {
-    if (!binding.canonical_source_fingerprint) return Promise.resolve({ data: null, error: null });
+    if (!binding.canonical_source_fingerprint) return Promise.resolve({ data: [], error: null });
     return supabase.from("kpi_observations")
       .select("binding_id, source_fingerprint, period_end, observed_at, value, prior_value, confidence")
       .eq("organization_id", organizationId)
@@ -476,18 +549,23 @@ async function loadProductionKpis(
       .order("period_end", { ascending: false })
       .order("observed_at", { ascending: false })
       .order("id", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(13);
   }));
   if (observationResults.some((result) => result.error)) return null;
-  const observations = observationResults.flatMap((result) => result.data ? [result.data as {
+  type ProductionObservation = {
     binding_id: string; source_fingerprint: string; period_end: string; observed_at: string;
     value: number; prior_value: number | null; confidence: ProductionKpiStatus["confidence"];
-  }] : []);
+  };
+  const observations = observationResults.flatMap((result) => (result.data ?? []) as ProductionObservation[]);
   const originalDefinitions = definitions.filter((definition) => definition.external_source?.catalogName === "original");
   const definitionByKey = new Map(originalDefinitions.map((definition) => [definition.kpi_key, definition]));
   const locationById = new Map(locations.map((location) => [location.id, location]));
-  const latestByBinding = new Map(observations.map((observation) => [observation.binding_id, observation]));
+  const observationsByBinding = new Map<string, ProductionObservation[]>();
+  for (const observation of observations) {
+    const existing = observationsByBinding.get(observation.binding_id) ?? [];
+    existing.push(observation);
+    observationsByBinding.set(observation.binding_id, existing);
+  }
   const cadenceHours: Record<string, number> = { "15m": 1, "30m": 2, "1h": 3, "4h": 8, "12h": 18, "24h": 36 };
   const now = Date.now();
   const sectionOrder = new Map(["executive", "revenue", "calls", "appointments", "sales", "membership"].map((section, index) => [section, index]));
@@ -496,42 +574,71 @@ async function loadProductionKpis(
     .sort((left, right) => (sectionOrder.get(left.section) ?? 99) - (sectionOrder.get(right.section) ?? 99) || left.title.localeCompare(right.title))
     .flatMap((catalogItem): ProductionKpiStatus[] => {
       const definition = definitionByKey.get(catalogItem.kpi_key);
+      const catalogPresentation = {
+        subtitle: catalogItem.subtitle,
+        sourceSystem: catalogItem.source_system,
+      };
       if (!definition) return [{
         bindingId: null, definitionId: null, kpiKey: catalogItem.kpi_key, title: catalogItem.title,
-        section: catalogItem.section, valueKind: catalogItem.value_kind, locationId: null,
+        section: catalogItem.section, valueKind: catalogItem.value_kind, ...catalogPresentation, locationId: null,
         locationName: "Catalog definition not enabled", sourceStatus: "Enable in Admin Center",
         value: null, priorValue: null, periodEnd: null, observedAt: null, confidence: "unknown", health: "unavailable",
       }];
       const definitionBindings = bindings.filter((binding) => binding.kpi_definition_id === definition.id);
       if (definitionBindings.length === 0) return [{
         bindingId: null, definitionId: definition.id, kpiKey: definition.kpi_key, title: definition.title,
-        section: definition.section, valueKind: definition.value_kind, locationId: null,
+        section: definition.section, valueKind: definition.value_kind, ...catalogPresentation, locationId: null,
         locationName: "No approved location binding", sourceStatus: "Source configuration required",
         value: null, priorValue: null, periodEnd: null, observedAt: null, confidence: "unknown", health: "unavailable",
       }];
       return definitionBindings.flatMap((binding): ProductionKpiStatus[] => {
         const location = locationById.get(binding.location_id);
         if (!location || location.status !== "active") return [];
-        const candidate = latestByBinding.get(binding.id);
-        const observation = candidate?.source_fingerprint === binding.canonical_source_fingerprint ? candidate : undefined;
-        const staleHours = definition.stale_after_hours ?? cadenceHours[binding.refresh_interval ?? ""] ?? 36;
-        const observedTime = observation ? Date.parse(observation.observed_at) : Number.NaN;
-        const periodEndTime = observation ? Date.parse(observation.period_end) : Number.NaN;
-        const freshnessTime = Math.min(observedTime, periodEndTime);
-        const health: ProductionKpiStatus["health"] = !observation
-          ? "unavailable"
-          : !Number.isFinite(freshnessTime) || now - freshnessTime > staleHours * 60 * 60 * 1000 ? "stale" : "current";
-        return [{
+        const candidateObservations = (observationsByBinding.get(binding.id) ?? [])
+          .filter((candidate) => candidate.source_fingerprint === binding.canonical_source_fingerprint);
+        const common = {
           bindingId: binding.id, definitionId: definition.id, kpiKey: definition.kpi_key, title: definition.title,
-          section: definition.section, valueKind: definition.value_kind, locationId: location.id,
+          section: definition.section, valueKind: definition.value_kind, ...catalogPresentation, locationId: location.id,
           locationName: location.display_name,
           sourceStatus: binding.canonical_source_fingerprint ? "Approved governed source" : "Source fingerprint required",
-          value: observation?.value ?? null, priorValue: observation?.prior_value ?? null,
-          periodEnd: observation?.period_end ?? null, observedAt: observation?.observed_at ?? null,
-          confidence: observation?.confidence ?? "unknown", health,
+        };
+        if (candidateObservations.length === 0) return [{
+          ...common,
+          value: null, priorValue: null, periodEnd: null, observedAt: null,
+          confidence: "unknown", health: "unavailable",
         }];
+        const staleHours = definition.stale_after_hours ?? cadenceHours[binding.refresh_interval ?? ""] ?? 36;
+        return candidateObservations.map((observation): ProductionKpiStatus => {
+          const observedTime = Date.parse(observation.observed_at);
+          const periodEndTime = Date.parse(observation.period_end);
+          const freshnessTime = Math.min(observedTime, periodEndTime);
+          const health: ProductionKpiStatus["health"] =
+            !Number.isFinite(freshnessTime) || now - freshnessTime > staleHours * 60 * 60 * 1000 ? "stale" : "current";
+          return {
+            ...common,
+            value: observation.value, priorValue: observation.prior_value,
+            periodEnd: observation.period_end, observedAt: observation.observed_at,
+            confidence: observation.confidence, health,
+          };
+        });
       });
     });
+}
+
+const ADMIN_PAGE_SIZE = 500;
+const ADMIN_MAX_ROWS_PER_CONNECTION = 50_000;
+
+async function loadAllAdminRows<T>(
+  pageLoader: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<T[] | null> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += ADMIN_PAGE_SIZE) {
+    const page = await pageLoader(from, from + ADMIN_PAGE_SIZE - 1);
+    if (page.error || !page.data) return null;
+    rows.push(...page.data);
+    if (rows.length > ADMIN_MAX_ROWS_PER_CONNECTION) return null;
+    if (page.data.length < ADMIN_PAGE_SIZE) return rows;
+  }
 }
 
 export async function getProductionTenantContext(
@@ -602,26 +709,41 @@ export async function getProductionTenantContext(
     if (auth.membership.role !== "owner" && auth.membership.role !== "admin") {
       return { ok: false, reason: "tenant-query-failed", message: AUTH_MESSAGES["tenant-query-failed"] };
     }
-    const [discoveryRunsResult, businessUnitsResult, mappingsResult, catalogResult, definitionsResult] = await Promise.all([
+    const [divisionsResult, discoveryResults, businessUnitResults, mappingResults, catalogResult, definitionsResult] = await Promise.all([
       auth.supabase
+        .from("organization_divisions")
+        .select("id, organization_id, name, status, sort_order, created_at, updated_at, archived_at")
+        .eq("organization_id", organizationId)
+        .order("sort_order")
+        .order("name"),
+      Promise.all(connections.map((connection) => auth.supabase
         .from("service_titan_discovery_runs")
         .select("id, organization_id, connection_id, status, requested_by, discovery_revision, requested_at, started_at, completed_at, error_code, error_message")
         .eq("organization_id", organizationId)
+        .eq("connection_id", connection.id)
         .order("requested_at", { ascending: false })
-        .limit(100),
-      auth.supabase
-        .from("service_titan_business_units")
-        .select("organization_id, connection_id, provider_business_unit_id, name, active, provider_modified_at, discovery_revision, discovery_run_id, last_seen_at")
-        .eq("organization_id", organizationId)
-        .order("name")
-        .limit(10000),
-      auth.supabase
-        .from("service_titan_business_unit_mappings")
-        .select("id, organization_id, connection_id, location_id, provider_business_unit_id, trade, discovery_revision, discovery_run_id, mapped_at, revoked_at")
-        .eq("organization_id", organizationId)
-        .is("revoked_at", null)
-        .order("mapped_at", { ascending: false })
-        .limit(10000),
+        .limit(100))),
+      Promise.all(connections.map((connection) => loadAllAdminRows<ServiceTitanBusinessUnit>(async (from, to) => {
+        const result = await auth.supabase
+          .from("service_titan_business_units")
+          .select("organization_id, connection_id, provider_business_unit_id, name, active, provider_modified_at, discovery_revision, discovery_run_id, last_seen_at")
+          .eq("organization_id", organizationId)
+          .eq("connection_id", connection.id)
+          .order("provider_business_unit_id")
+          .range(from, to);
+        return { data: result.data as ServiceTitanBusinessUnit[] | null, error: result.error };
+      }))),
+      Promise.all(connections.map((connection) => loadAllAdminRows<ServiceTitanBusinessUnitMapping>(async (from, to) => {
+        const result = await auth.supabase
+          .from("service_titan_business_unit_mappings")
+          .select("id, organization_id, connection_id, location_id, provider_business_unit_id, division_id, discovery_revision, discovery_run_id, mapped_at, revoked_at")
+          .eq("organization_id", organizationId)
+          .eq("connection_id", connection.id)
+          .is("revoked_at", null)
+          .order("provider_business_unit_id")
+          .range(from, to);
+        return { data: result.data as ServiceTitanBusinessUnitMapping[] | null, error: result.error };
+      }))),
       auth.supabase
         .from("original_kpi_catalog")
         .select("kpi_key, catalog_version, title, section, value_kind, direction, subtitle, source_system, source_readiness_requirement, endpoint_recipe_id, endpoint_recipe_version, default_refresh_cadence")
@@ -633,19 +755,24 @@ export async function getProductionTenantContext(
         .select("kpi_key, version, lifecycle, title, section, value_kind, external_source")
         .eq("organization_id", organizationId),
     ]);
+    const discoveryRuns = discoveryResults.flatMap((result) => result.data ?? []);
+    const businessUnits = businessUnitResults.flatMap((result) => result ?? []);
+    const businessUnitMappings = mappingResults.flatMap((result) => result ?? []);
     if (
-      discoveryRunsResult.error || !discoveryRunsResult.data ||
-      businessUnitsResult.error || !businessUnitsResult.data ||
-      mappingsResult.error || !mappingsResult.data ||
+      divisionsResult.error || !divisionsResult.data ||
+      discoveryResults.some((result) => result.error || !result.data) ||
+      businessUnitResults.some((result) => result === null) ||
+      mappingResults.some((result) => result === null) ||
       catalogResult.error || !catalogResult.data ||
       definitionsResult.error || !definitionsResult.data
     ) {
       return { ok: false, reason: "tenant-query-failed", message: AUTH_MESSAGES["tenant-query-failed"] };
     }
     adminConfiguration = {
-      discoveryRuns: discoveryRunsResult.data as ServiceTitanDiscoveryRun[],
-      businessUnits: businessUnitsResult.data as ServiceTitanBusinessUnit[],
-      businessUnitMappings: mappingsResult.data as ServiceTitanBusinessUnitMapping[],
+      divisions: divisionsResult.data as OrganizationDivision[],
+      discoveryRuns: discoveryRuns as ServiceTitanDiscoveryRun[],
+      businessUnits,
+      businessUnitMappings,
       originalKpiCatalog: catalogResult.data as OriginalKpiCatalogItem[],
       originalKpiDefinitions: definitionsResult.data as OriginalKpiDefinitionState[],
     };

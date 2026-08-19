@@ -4,7 +4,7 @@
 
 - **Control-plane pilot onboarding:** GO after an approved production deployment.
 - **Live KPI dashboard:** CONDITIONAL NO-GO until the implemented saved-report worker completes one real integration reconciliation, one controlled production reconciliation, and an approved scheduler/alerting rollout.
-- **Production deployment performed:** No.
+- **Production deployment status:** determined by the exact-SHA Vercel and health evidence below; do not infer deployment state from this static runbook.
 
 The production-mode application is authenticated and tenant-isolated. It persists onboarding configuration, governed source/evidence contracts, and KPI observations. It deliberately shows only matching valid observations with explicit current, stale, or unavailable health; demo values are never substituted.
 
@@ -46,17 +46,15 @@ Executed with Node `22.23.2` unless noted otherwise:
 
 - TypeScript: passed.
 - ESLint: passed.
-- Vitest: 11 files, 129 tests passed.
-- ServiceTitan worker: 10 Node contract/reduction/idempotency/redirect tests passed.
+- Vitest: 16 files, 184 tests passed.
+- ServiceTitan worker: 28 Node contract/reduction/idempotency/redirect tests passed.
 - Operator script syntax and `--help` entry points: passed.
 - Next.js 16.3.1 optimized production build: passed.
 - npm production dependency audit: 0 vulnerabilities.
-- Staging database migration push: passed through `20260818000800` with no pending migrations.
-- Staging SQL catalog/RLS/behavior verification: passed; transaction rolled back with no fixtures retained.
-- Staging health endpoint: HTTP 200; database configured, reachable, and expected release marker ready.
+- Hosted migration 017 plus the complete 1,600+ assertion SQL catalog/RLS/behavior verifier: passed in 0.66 seconds; transaction rolled back and both migration-017-only objects were confirmed absent.
 - Unauthenticated `/`: HTTP 307 to login.
 - Authenticated `/`: HTTP 200 with the correct tenant and sign-out control.
-- Authenticated live-KPI shell: HTTP 200 with a truthful empty state when no approved bindings exist.
+- Authenticated production dashboard: section navigation, location/period controls, governed unavailable states, keyboard-safe insight dialog, scorecard export, and 390 px mobile layout passed with zero console/request failures and no demo-data leakage.
 - Authenticated `/admin`: HTTP 200 with production administration controls.
 - Authenticated `/login`: HTTP 307 to `/`.
 - Integration route without Origin: HTTP 403.
@@ -64,7 +62,7 @@ Executed with Node `22.23.2` unless noted otherwise:
 - Authenticated same-origin ServiceTitan request: HTTP 409 managed-secret-required; raw credentials not accepted.
 - Non-object JSON request: HTTP 400.
 - Disposable QA tenant bootstrap, authentication, isolation checks, and guarded teardown: passed; QA rows and Auth user removed.
-- Independent bounded security review: GO for control-plane pilot with guardrails; NO-GO for live KPI release.
+- Three independent bounded reviews—database/security, dashboard UX/data integrity, and release engineering—returned GO with no remaining release blockers.
 
 ## Migration order
 
@@ -86,6 +84,9 @@ Apply migrations in timestamp order:
 14. `20260818001200_atomic_qa_portfolio_cleanup.sql`
 15. `20260818001300_admin_credential_vault.sql`
 16. `20260818001400_configuration_revision_race_guard.sql`
+17. `20260819001500_servicetitan_discovery_kpi_catalog.sql`
+18. `20260819001600_enterprise_admin_hardening.sql`
+19. `20260819001700_tenant_managed_divisions.sql`
 
 Verify migration state before application promotion:
 
@@ -102,15 +103,16 @@ Run `supabase/tests/schema_verification.sql` with a privileged direct PostgreSQL
 APP_MODE=production
 NEXT_PUBLIC_SUPABASE_URL=https://PROJECT.supabase.co
 SUPABASE_URL=https://PROJECT.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=publishable/RLS-constrained value
-SUPABASE_SERVICE_ROLE_KEY=operator/worker environment only
-GM_PLATFORM_OWNER_PROFILE_ID=approved Champions Group operator profile UUID
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<publishable-RLS-constrained-value>
+SUPABASE_SERVICE_ROLE_KEY=<operator-worker-only-secret>
+GM_PLATFORM_OWNER_PROFILE_ID=<approved-Champions-Group-operator-profile-UUID>
 GM_DEFAULT_PORTFOLIO_ID=c1000000-0000-4000-8000-000000000001
+GM_BUILD_SHA=<exact-reviewed-Git-commit-SHA>
 ```
 
 `SUPABASE_URL` is server-only and must exactly match `NEXT_PUBLIC_SUPABASE_URL`; this prevents trusted Admin workers from being redirected to another project. `SUPABASE_SERVICE_ROLE_KEY`, database URLs, ServiceTitan credentials, and Domo credentials must not be configured as `NEXT_PUBLIC_*`. Only the narrow server-side ServiceTitan validation/discovery actions and trusted operators use the service-role key; browser requests never receive it.
 
-The application release is compiled to require the exact database marker `20260819001600_enterprise_admin_hardening`; the expected marker is intentionally not environment-configurable.
+The application release is compiled to require the exact database marker `20260819001700_tenant_managed_divisions`; the expected marker is intentionally not environment-configurable. New application instances call only `get_division_release_readiness()` and fail closed unless it succeeds with marker 017. The legacy `get_release_readiness()` remains pinned to marker `20260819001600_enterprise_admin_hardening` only so already-running schema-016 instances stay healthy during the DB-first rolling window.
 
 Private-pilot user creation is enforced at the database boundary: only a service-role-preauthorized email can be created, the authorization expires after five minutes, and it is consumed once. The bootstrap script performs this authorization immediately before `admin.createUser()`. If Supabase Management API access becomes available, also disable provider-level public signup as defense in depth.
 
@@ -118,7 +120,27 @@ Pin the deployment runtime to Node 22. The package declares `22.x`, and `.nvmrc`
 
 ## Portfolio promotion requirement
 
-Migration `01000` intentionally creates no user-specific portfolio membership. Immediately after applying it, use the service-role client to call `grant_portfolio_owner_access` for the approved Champions Group operator profile with an audit reason. Then verify `get_release_readiness()` returns `ready=true` before deploying the application. A fresh schema is expected to remain unavailable until this explicit grant is complete.
+Migration `01000` intentionally creates no user-specific portfolio membership. Immediately after applying it, use the service-role client to call `grant_portfolio_owner_access` for the approved Champions Group operator profile with an audit reason. After all migrations are applied, verify `get_division_release_readiness()` returns marker 017 with `ready=true` before deploying the application. A fresh schema is expected to remain unavailable until this explicit grant is complete.
+
+## Exact-SHA release and promotion
+
+Record the current production deployment ID and commit SHA as the rollback target before release. Then create and verify one immutable release candidate:
+
+```bash
+test -z "$(git status --porcelain)"
+export RELEASE_SHA="$(git rev-parse HEAD)"
+git fetch origin main
+test "$(git rev-parse origin/main)" = "$RELEASE_SHA"
+```
+
+Create the Vercel production deployment through `POST /v13/deployments?forceNew=1` with `gitSource.sha=$RELEASE_SHA`, the canonical project/repository IDs, and deployment environment `GM_BUILD_SHA=$RELEASE_SHA`. Do not rely on an earlier automatic deployment after an environment change. Poll the deployment to `READY`, then require all of the following before handoff:
+
+1. Vercel deployment metadata `githubCommitSha` equals `$RELEASE_SHA`.
+2. The canonical production alias is attached to that deployment ID.
+3. A cache-busted `/api/health` request returns HTTP 200, `mode=production`, schema marker 017, `build.commitSha=$RELEASE_SHA`, and the immutable deployment identity.
+4. Authenticated tenant/dashboard/Admin smoke tests pass on the canonical alias.
+
+Retain the release SHA, deployment ID, previous production SHA, and previous deployment ID in the release evidence. Do not report deployment from a successful Git push alone.
 
 Future brand onboarding must use `scripts/bootstrap-tenant.mjs` with both protected operator variables above. The script invokes `finalize_brand_portfolio_onboarding`, which atomically refreshes the approved operator's explicit brand memberships and attaches the new brand to Champions Group. Missing variables fail before Auth-user or tenant creation.
 
@@ -143,9 +165,12 @@ Record the returned profile, organization, and membership IDs in the approved op
 ### 2. Configure the tenant
 
 1. Owner signs in.
-2. Add the exact operating location and timezone.
-3. Store the ServiceTitan credential JSON in Google Secret Manager or the approved operator environment. The JSON must contain exactly `clientId`, `clientSecret`, and `appKey`.
-4. In tenant administration, register only the opaque reference and assign the exact location.
+2. Add every operating location and its U.S. timezone.
+3. Store the ServiceTitan credential JSON in Supabase Vault or the approved operator secret manager. The JSON must contain exactly `clientId`, `clientSecret`, and `appKey`.
+4. Register the connection, assign its permitted locations, and validate it.
+5. Run business-unit discovery after every credential revision.
+6. Create tenant divisions. Reserved pseudo-values such as “Not mapped” and “Unmapped” cannot be division names.
+7. Map every active business unit from each enabled connection’s latest successful discovery to both an actively assigned location and active division. A stale, revoked, foreign-location, or partial mapping does not satisfy readiness. Use the governed bulk workflow above 500 active units.
 
 ### 3. Validate the connection
 
@@ -195,7 +220,7 @@ Stop onboarding immediately if:
 - credential-like data appears in logs, responses, or persisted JSON.
 - the direct Auth signup API accepts an email that was not preauthorized by the service-role bootstrap.
 
-Application rollback: promote the last known-good deployment. Do not reverse database migrations destructively. Use a forward correction migration.
+Application rollback: promote the recorded previous production deployment in Vercel, then cache-bust `/api/health` and require `build.commitSha` to equal the recorded rollback SHA before declaring recovery. Do not reverse database migrations destructively; use a forward correction migration. Because migration 017 preserves the schema-016 legacy readiness contract, the previous application remains compatible during rollback.
 
 Connection rollback: disable the affected connection. The RPC revokes active location assignments atomically.
 

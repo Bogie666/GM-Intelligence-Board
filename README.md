@@ -2,7 +2,7 @@
 
 A configurable, multi-tenant KPI command center for Champions Group general managers.
 
-This repository contains two explicit modes: a polished browser-local **demo** with illustrative data and an authenticated, database-backed **staging/production application** for governed tenant onboarding and live KPI observations. A fail-closed saved-report ingestion worker is implemented; live tenant release still requires a real ServiceTitan reconciliation and an approved scheduler.
+This repository contains two explicit modes: a polished browser-local **demo** with illustrative data and an authenticated, database-backed **staging/production application** for governed tenant onboarding and live KPI observations. Production preserves the accepted GM dashboard information architecture—section navigation, location and period controls, KPI cards, insight drawers, scorecards, and export—through a separate tenant-scoped data adapter; it never falls back to demo values or browser-local configuration. A fail-closed saved-report ingestion worker is implemented; each connected tenant still requires a real ServiceTitan reconciliation and an approved scheduler before its observations are treated as operationally live.
 
 ## Live prototype behavior
 
@@ -105,7 +105,7 @@ See:
 ## Recommended production phases
 
 1. **Foundation:** PostgreSQL, RLS, SSR Auth/RBAC, transactional tenant bootstrap, production-mode persistence, and connection validation are established and verified in staging.
-2. **ServiceTitan onboarding:** validate the saved-report worker against the integration environment, complete exact business-unit mapping and source evidence, reconcile the first observation, then attach an approved scheduler.
+2. **ServiceTitan onboarding:** validate each connection, run complete business-unit discovery, create tenant-managed divisions, map every active unit from the latest successful discovery to an assigned location and active division, validate the saved-report worker, complete source evidence, reconcile the first observation, then attach an approved scheduler.
 3. **Finance controls:** governed Domo/CSV ingestion, budgets, targets, workday calendars, forecast definitions.
 4. **External sources:** GA4, phone/CCaaS, web booking/chat events, attribution deduplication.
 5. **Portfolio operations:** cross-brand rollups, alerts, exports, setup health, source confidence, support runbooks.

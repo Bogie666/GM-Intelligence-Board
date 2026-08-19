@@ -12,11 +12,15 @@ export async function GET() {
     ? true
     : database.configured && database.reachable && database.schemaReady;
 
+  const commitSha = process.env.GM_BUILD_SHA?.trim() || process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null;
+  const deploymentId = process.env.VERCEL_DEPLOYMENT_ID?.trim() || process.env.VERCEL_URL?.trim() || null;
+
   return NextResponse.json(
     {
       ok,
       service: "gm-intelligence-board",
       mode: config.mode,
+      build: { commitSha, deploymentId },
       database,
       timestamp: new Date().toISOString(),
     },
