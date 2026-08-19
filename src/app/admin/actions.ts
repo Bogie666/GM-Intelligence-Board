@@ -4,6 +4,11 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
+import { createServiceRoleSupabaseClient } from "@/lib/supabase/service-role";
+import {
+  executeServiceTitanBusinessUnitDiscovery,
+  executeServiceTitanValidation,
+} from "@/lib/servicetitan-workers";
 import {
   validateConnectionCredentialInput,
   validateCredentialRotationInput,
@@ -16,6 +21,14 @@ export interface AdminActionState {
   status: "idle" | "success" | "error";
   message: string;
   fieldErrors?: Record<string, string>;
+}
+
+export interface ServiceTitanExecutionActionState extends AdminActionState {
+  operation: "validation" | "business_unit_discovery";
+  phase: "ready" | "completed" | "failed";
+  retryable: boolean;
+  errorCode?: "worker_unavailable" | "validation_failed" | "discovery_request_failed" | "discovery_failed";
+  businessUnitCount?: number;
 }
 
 type DatabaseError = { code?: string; message?: string } | null;
@@ -53,7 +66,7 @@ async function hasValidRequestOrigin(): Promise<boolean> {
   }
 }
 
-async function getWritableTenant(): Promise<
+async function requireAdminMutation(): Promise<
   | { ok: true; organizationId: string; supabase: Awaited<ReturnType<typeof getTenantAuthContext>> & { ok: true } }
   | { ok: false; state: AdminActionState }
 > {
@@ -80,7 +93,7 @@ export async function updateOrganizationAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
 
   const validation = validateOrganizationInput({ slug: input(formData, "slug"), name: input(formData, "name") });
@@ -105,7 +118,7 @@ export async function createLocationAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
 
   const validation = validateLocationInput({
@@ -137,7 +150,7 @@ export async function updateLocationAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const locationId = input(formData, "locationId");
   if (!validateUuid(locationId)) return { status: "error", message: "The location identifier is invalid." };
@@ -176,7 +189,7 @@ export async function archiveLocationAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const locationId = input(formData, "locationId");
   if (!validateUuid(locationId)) return { status: "error", message: "The location identifier is invalid." };
@@ -200,7 +213,7 @@ export async function createConnectionAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
 
   const validation = validateConnectionCredentialInput({
@@ -260,7 +273,7 @@ export async function rotateConnectionCredentialsAction(
   _previous: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const connectionId = input(formData, "connectionId").trim();
   if (!validateUuid(connectionId)) {
@@ -287,11 +300,66 @@ export async function rotateConnectionCredentialsAction(
   return { status: "success", message: "Credentials encrypted and replaced. Revalidate the connection before ingestion." };
 }
 
+function executionFailure(
+  operation: ServiceTitanExecutionActionState["operation"],
+  message: string,
+  errorCode: NonNullable<ServiceTitanExecutionActionState["errorCode"]> | undefined,
+  retryable: boolean,
+): ServiceTitanExecutionActionState {
+  return { status: "error", operation, phase: "failed", retryable, message, ...(errorCode ? { errorCode } : {}) };
+}
+
+export async function validateServiceTitanConnectionAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<ServiceTitanExecutionActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) {
+    return executionFailure("validation", writable.state.message, undefined, false);
+  }
+  const connectionId = input(formData, "connectionId").trim();
+  if (!validateUuid(connectionId)) {
+    return executionFailure("validation", "The connection identifier is invalid.", undefined, false);
+  }
+
+  let serviceClient;
+  try {
+    serviceClient = createServiceRoleSupabaseClient();
+  } catch {
+    return executionFailure(
+      "validation",
+      "Connection validation is temporarily unavailable. Verify the server worker configuration and retry.",
+      "worker_unavailable",
+      true,
+    );
+  }
+
+  try {
+    await executeServiceTitanValidation(serviceClient, writable.organizationId, connectionId);
+    refreshTenantPages();
+    return {
+      status: "success",
+      operation: "validation",
+      phase: "ready",
+      retryable: false,
+      message: "ServiceTitan credentials and business-unit access validated. The connection is ready.",
+    };
+  } catch {
+    refreshTenantPages();
+    return executionFailure(
+      "validation",
+      "ServiceTitan validation did not succeed. Check the managed credentials and tenant access, then retry.",
+      "validation_failed",
+      true,
+    );
+  }
+}
+
 export async function disableConnectionAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const connectionId = input(formData, "connectionId");
   if (!validateUuid(connectionId)) return { status: "error", message: "The connection identifier is invalid." };
@@ -330,15 +398,17 @@ function rpcConfigurationError(operation: string, error: DatabaseError): AdminAc
   return databaseError(operation, error);
 }
 
-export async function requestBusinessUnitDiscoveryAction(
+async function executeBusinessUnitDiscoveryAction(
   _previousState: AdminActionState,
   formData: FormData,
-): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
-  if (writable.ok === false) return writable.state;
+): Promise<ServiceTitanExecutionActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) {
+    return executionFailure("business_unit_discovery", writable.state.message, undefined, false);
+  }
   const connectionId = input(formData, "connectionId").trim();
   if (!validateUuid(connectionId)) {
-    return { status: "error", message: "The connection identifier is invalid." };
+    return executionFailure("business_unit_discovery", "The connection identifier is invalid.", undefined, false);
   }
 
   const { data, error } = await writable.supabase.supabase.rpc(
@@ -346,17 +416,72 @@ export async function requestBusinessUnitDiscoveryAction(
     { p_organization_id: writable.organizationId, p_connection_id: connectionId },
   );
   if (error || typeof data !== "string" || !validateUuid(data)) {
-    return rpcConfigurationError("Business-unit discovery", error);
+    return executionFailure(
+      "business_unit_discovery",
+      "Business-unit discovery could not be requested for this validated connection.",
+      "discovery_request_failed",
+      true,
+    );
   }
-  refreshTenantPages();
-  return { status: "success", message: `Discovery request ${data} is queued for the trusted ServiceTitan worker.` };
+
+  let serviceClient;
+  try {
+    serviceClient = createServiceRoleSupabaseClient();
+  } catch {
+    return executionFailure(
+      "business_unit_discovery",
+      "Business-unit discovery is queued but trusted execution is temporarily unavailable. Verify the server worker configuration and retry.",
+      "worker_unavailable",
+      true,
+    );
+  }
+  try {
+    const result = await executeServiceTitanBusinessUnitDiscovery(
+      serviceClient,
+      writable.organizationId,
+      connectionId,
+    );
+    refreshTenantPages();
+    return {
+      status: "success",
+      operation: "business_unit_discovery",
+      phase: "completed",
+      retryable: false,
+      businessUnitCount: result.businessUnitCount,
+      message: `${result.businessUnitCount} ServiceTitan business unit${result.businessUnitCount === 1 ? "" : "s"} discovered and saved for review.`,
+    };
+  } catch {
+    refreshTenantPages();
+    return executionFailure(
+      "business_unit_discovery",
+      "Business-unit discovery did not complete. Check the validated connection and provider access, then retry.",
+      "discovery_failed",
+      true,
+    );
+  }
+}
+
+/** Backward-compatible export: existing forms now request and execute discovery in-product. */
+export async function requestBusinessUnitDiscoveryAction(
+  previousState: AdminActionState,
+  formData: FormData,
+): Promise<ServiceTitanExecutionActionState> {
+  return executeBusinessUnitDiscoveryAction(previousState, formData);
+}
+
+/** Preferred Run/Retry export for the production Admin Center integration. */
+export async function runBusinessUnitDiscoveryAction(
+  previousState: AdminActionState,
+  formData: FormData,
+): Promise<ServiceTitanExecutionActionState> {
+  return executeBusinessUnitDiscoveryAction(previousState, formData);
 }
 
 export async function replaceConnectionLocationsAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const connectionId = input(formData, "connectionId").trim();
   const locationIds = repeatedInput(formData, "locationId").map((value) => value.trim());
@@ -392,7 +517,7 @@ export async function replaceBusinessUnitMappingsAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const connectionId = input(formData, "connectionId").trim();
   const discoveryRevision = input(formData, "discoveryRevision").trim();
@@ -448,7 +573,7 @@ export async function activateOriginalKpiCatalogAction(
   _previousState: AdminActionState,
   formData: FormData,
 ): Promise<AdminActionState> {
-  const writable = await getWritableTenant();
+  const writable = await requireAdminMutation();
   if (writable.ok === false) return writable.state;
   const selectionMode = input(formData, "selectionMode");
   const selectedKeys = repeatedInput(formData, "kpiKey").map((value) => value.trim());

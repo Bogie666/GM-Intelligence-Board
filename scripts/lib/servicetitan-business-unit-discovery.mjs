@@ -167,18 +167,25 @@ export async function fetchWithDiscoveryPolicy(url, init, operation, options = {
   const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const timeoutMs = options.timeoutMs ?? 30_000;
   const maximumAttempts = options.maximumAttempts ?? 3;
+  const deadlineAt = options.deadlineAt;
 
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const remainingMs = typeof deadlineAt === "number" ? deadlineAt - Date.now() : Number.POSITIVE_INFINITY;
+    if (remainingMs <= 0) fail(`${operation}_deadline`, `${operation} exceeded the bounded execution deadline.`);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(timeoutMs, remainingMs)));
     let response;
     try {
       response = await fetchImpl(url, { ...init, redirect: "error", signal: controller.signal });
     } catch {
-      if (attempt === maximumAttempts) {
+      if (attempt === maximumAttempts || (typeof deadlineAt === "number" && deadlineAt <= Date.now())) {
         fail(`${operation}_network`, `${operation} failed after bounded network retries.`);
       }
-      await sleep(attempt * 500);
+      const waitMs = attempt * 500;
+      if (typeof deadlineAt === "number" && Date.now() + waitMs >= deadlineAt) {
+        fail(`${operation}_deadline`, `${operation} exceeded the bounded execution deadline.`);
+      }
+      await sleep(waitMs);
       continue;
     } finally {
       clearTimeout(timeout);
@@ -192,6 +199,9 @@ export async function fetchWithDiscoveryPolicy(url, init, operation, options = {
         ? Math.min(retryAfterSeconds * 1000, 30_000)
         : attempt * 1000;
       await cancelBody(response);
+      if (typeof deadlineAt === "number" && Date.now() + waitMs >= deadlineAt) {
+        fail(`${operation}_deadline`, `${operation} exceeded the bounded execution deadline.`);
+      }
       await sleep(waitMs);
       continue;
     }
@@ -298,6 +308,8 @@ export async function runBusinessUnitDiscovery({
   fetchImpl,
   sleep,
   timeoutMs,
+  maximumAttempts,
+  deadlineAt,
 }) {
   const contextValue = await governedRpc(rpc, "get_service_titan_connection_worker_context", {
     p_organization_id: organizationId,
@@ -321,7 +333,7 @@ export async function runBusinessUnitDiscovery({
     } catch {
       fail("credential_unavailable", "The approved managed credential could not be resolved.");
     }
-    const networkOptions = { fetchImpl, sleep, timeoutMs };
+    const networkOptions = { fetchImpl, sleep, timeoutMs, maximumAttempts, deadlineAt };
     const token = await obtainServiceTitanToken(credentials, connection.environment, networkOptions);
     const inventory = await discoverBusinessUnits({ credentials, token, connection }, networkOptions);
     const completed = await governedRpc(rpc, "complete_service_titan_business_unit_discovery", {
