@@ -5,12 +5,19 @@ import { ProductionAdminConsole } from "@/components/production-admin-console";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import { isAdminRole } from "@/lib/auth";
+import { parseProductionAdminSection } from "@/lib/admin-navigation";
 import { getAppConfig } from "@/lib/env";
 import { getProductionTenantContext } from "@/lib/tenant-context";
 
-export default async function AdminPage() {
+export default async function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ section?: string | string[] }>;
+}) {
   const config = getAppConfig();
   if (config.isDemo) return <AdminConsole />;
+
+  const initialSection = parseProductionAdminSection((await searchParams).section);
 
   const result = await getProductionTenantContext({ includeAdminConfiguration: true });
   if (!result.ok) {
@@ -43,5 +50,5 @@ export default async function AdminPage() {
   }
 
   if (!isAdminRole(result.tenant.role)) redirect("/");
-  return <ProductionAdminConsole tenant={result.tenant} mode={config.mode} />;
+  return <ProductionAdminConsole tenant={result.tenant} mode={config.mode} initialSection={initialSection} />;
 }
