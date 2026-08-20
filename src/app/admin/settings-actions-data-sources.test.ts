@@ -72,7 +72,9 @@ const IDS = {
 function query(table: string) {
   const builder = {
     select: vi.fn(() => builder), eq: vi.fn(() => builder), neq: vi.fn(() => builder), is: vi.fn(() => builder),
-    order: vi.fn(() => builder), limit: vi.fn(() => builder), update: vi.fn(() => builder), insert: vi.fn(async (row: Record<string, unknown>) => {
+    in: vi.fn(() => builder), order: vi.fn(() => builder), limit: vi.fn(() => builder),
+    update: vi.fn((row: Record<string, unknown>) => { mocks.upserts.push({ table, row }); return builder; }),
+    insert: vi.fn(async (row: Record<string, unknown>) => {
       mocks.upserts.push({ table, row }); return { data: null, error: null };
     }),
     upsert: vi.fn(async (row: Record<string, unknown>) => {
@@ -264,6 +266,30 @@ describe("four governed binding methods", () => {
     const result = await saveKpiBindingAction(INITIAL, data);
     expect(result.status).toBe("error");
     expect(result.message).toContain("immutable");
+    expect(mocks.upserts).toHaveLength(0);
+  });
+
+  it("stamps the requested observation window on the draft and defaults to trailing", async () => {
+    mocks.fixtures.set("custom_kpi_definitions", { id: IDS.definition, type: "service_titan", external_source: null });
+    mocks.fixtures.set("service_titan_custom_endpoint_sources", { id: IDS.source });
+    const data = baseBinding("custom_endpoint"); data.set("customEndpointSourceId", IDS.source);
+    const defaulted = await saveKpiBindingAction(INITIAL, data);
+    expect(defaulted.status).toBe("success");
+    expect(mocks.upserts.at(-1)?.row).toMatchObject({ observation_window: "trailing" });
+    data.set("observationWindow", "mtd");
+    const monthly = await saveKpiBindingAction(INITIAL, data);
+    expect(monthly.status).toBe("success");
+    expect(mocks.upserts.at(-1)?.row).toMatchObject({ observation_window: "mtd" });
+  });
+
+  it("rejects unsupported observation windows before touching the database", async () => {
+    mocks.fixtures.set("custom_kpi_definitions", { id: IDS.definition, type: "service_titan", external_source: null });
+    mocks.fixtures.set("service_titan_custom_endpoint_sources", { id: IDS.source });
+    const data = baseBinding("custom_endpoint"); data.set("customEndpointSourceId", IDS.source);
+    data.set("observationWindow", "yearly");
+    const result = await saveKpiBindingAction(INITIAL, data);
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("observation window");
     expect(mocks.upserts).toHaveLength(0);
   });
 

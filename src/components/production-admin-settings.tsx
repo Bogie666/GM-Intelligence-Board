@@ -104,8 +104,8 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
   });
   const defaultParameters = Object.fromEntries(requiredParameters.map((name) => [name,
     /(^|\b)(to|end)/i.test(name) ? "$periodEndDate" : "$periodStartDate"]));
-  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId && binding.location_id === locationId);
-  const immutableExisting = existingBinding?.approval_status === "approved" || existingBinding?.approval_status === "archived";
+  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId && binding.location_id === locationId && binding.approval_status !== "archived");
+  const immutableExisting = existingBinding?.approval_status === "approved";
 
   return (
     <section className="production-panel">
@@ -118,6 +118,7 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
         <label>Validated assigned connection<select name="connectionId" required value={connectionId} onChange={(event) => { setConnectionId(event.target.value); setReportId(""); }} disabled={!locationId}><option value="">{locationId ? "Choose connection" : "Choose a location first"}</option>{availableConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.display_name} · {connection.service_titan_tenant_id}</option>)}</select></label>
         <label>Active saved report<select name="reportSourceId" required value={reportId} onChange={(event) => setReportId(event.target.value)} disabled={!connectionId}><option value="">{connectionId ? "Choose report" : "Choose a connection first"}</option>{eligibleReports.map((report) => <option key={report.id} value={report.id}>{report.name} · {report.lifecycle}</option>)}</select></label>
         <label>Refresh cadence<select name="refreshInterval" defaultValue="24h"><option value="4h">Every 4 hours</option><option value="12h">Every 12 hours</option><option value="24h">Every 24 hours</option></select></label>
+        <label>Observation window<select name="observationWindow" defaultValue="trailing"><option value="trailing">Trailing cadence window</option><option value="today">Location-local day to date</option><option value="mtd">Location-local month to date</option></select></label>
         <label>Reduction<select name="reportReduction" value={reduction} onChange={(event) => setReduction(event.target.value)}><option value="sum">Sum</option><option value="average">Average</option><option value="count">Count rows</option><option value="ratio">Ratio</option></select></label>
         {reduction !== "count" && reduction !== "ratio" ? <label>Numeric value field<select key={`${reportId}:${reduction}`} name="valueField" required defaultValue=""><option value="" disabled>Choose field</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label> : <input type="hidden" name="valueField" value="" />}
         {reduction === "ratio" ? <><label>Numerator field<select name="numeratorField" required defaultValue=""><option value="" disabled>Choose numerator</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label><label>Denominator field<select name="denominatorField" required defaultValue=""><option value="" disabled>Choose denominator</option>{numericFields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label></> : <><input type="hidden" name="numeratorField" value="" /><input type="hidden" name="denominatorField" value="" /></>}
@@ -125,7 +126,7 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
         <p id="binding-parameter-help" className="production-inline-guidance span-two">Required names are populated from the declared report contract. Period placeholders are resolved by the worker at governance and ingestion time.</p>
         <input type="hidden" name="businessUnitMappings" value="{}" />
         {existingBinding ? immutableExisting
-          ? <div className="production-notice error span-two" role="alert">The existing {existingBinding.approval_status} binding is immutable. Choose another KPI or location; it cannot be replaced with a draft.</div>
+          ? <div className="production-notice error span-two" role="alert">The existing approved binding is immutable. Archive it from the trusted operator path before creating a replacement draft.</div>
           : <label className="production-checkbox-row span-two"><input type="checkbox" name="confirmReplacement" value="replace" required /><span><strong>Replace existing {existingBinding.approval_status} binding</strong><small>This replaces binding {existingBinding.id} for the same KPI and location with a new draft.</small></span></label>
           : null}
         <div className="production-form-footer"><span>Saving creates a draft exact-location binding. A governed evidence review is required before ingestion.</span><Submit disabled={immutableExisting}>Save draft binding</Submit></div>
@@ -208,7 +209,7 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
           {workspace.bindings.map((binding) => (
             <article className="production-record" key={binding.id}>
               <div className="production-record-heading"><div><strong>{definitionName.get(binding.kpi_definition_id) ?? binding.kpi_definition_id}</strong><span>{locationName.get(binding.location_id) ?? binding.location_id} · {binding.source_method ?? "unconfigured"}</span></div><span className={`production-status ${binding.approval_status}`}>{binding.approval_status}</span></div>
-              <small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? binding.custom_endpoint_source_id ?? binding.domo_dataset_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"}</small>
+              <small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? binding.custom_endpoint_source_id ?? binding.domo_dataset_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"} · {binding.observation_window === "mtd" ? "month to date" : binding.observation_window === "today" ? "day to date" : "trailing window"}</small>
               {binding.source_method === "endpoint_recipe" && binding.approval_status !== "approved" && binding.approval_status !== "archived" ? (
                 <details className="production-operator-handoff"><summary>Trusted endpoint-recipe approval command</summary><p>Run after obtaining an independent ServiceTitan reference value for one completed period. This executes the same governed recipe contract used by ingestion.</p><code>{`npm run data-source:approve -- --organization-id ${tenant.organization.id} --binding-id ${binding.id} --actor-profile-id ${tenant.user.id} --period-start PERIOD_START_ISO --period-end PERIOD_END_ISO --reference-value REFERENCE_VALUE --tolerance TOLERANCE --confirm ${tenant.organization.id}:${binding.id}:PERIOD_START_ISO`}</code></details>
               ) : null}

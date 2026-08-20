@@ -146,6 +146,75 @@ export function deriveBindingPeriod(refreshInterval, now = new Date()) {
   return { start: new Date(end.getTime() - intervalMs), end };
 }
 
+const OBSERVATION_WINDOWS = Object.freeze(["trailing", "today", "mtd"]);
+
+/** Reads a wall-clock component map for an instant in a named IANA timezone. */
+function zonedParts(instant, timeZone) {
+  let formatted;
+  try {
+    formatted = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(instant);
+  } catch {
+    throw new WorkerError("timezone-invalid", `Location timezone ${timeZone} is not a valid IANA zone.`);
+  }
+  const parts = {};
+  for (const part of formatted) {
+    if (part.type !== "literal") parts[part.type] = Number(part.value);
+  }
+  return parts;
+}
+
+/** Converts local wall-clock fields in a named timezone to the exact UTC instant. */
+function zonedTimeToUtc({ year, month, day }, timeZone) {
+  // Initial guess: treat the local wall clock as UTC, then correct by the
+  // observed offset. Two iterations converge across every real UTC offset,
+  // including DST transitions.
+  let guess = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const observed = zonedParts(new Date(guess), timeZone);
+    const observedAsUtc = Date.UTC(
+      observed.year, observed.month - 1, observed.day,
+      observed.hour, observed.minute, observed.second, 0,
+    );
+    const target = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+    const difference = target - observedAsUtc;
+    if (difference === 0) return new Date(guess);
+    guess += difference;
+  }
+  return new Date(guess);
+}
+
+/**
+ * Derives the governed observation period for a binding: the trailing cadence
+ * window (default), or a calendar-aligned window (local day / local
+ * month-to-date) anchored to the bound location's timezone.
+ */
+export function deriveObservationPeriod(binding, now = new Date()) {
+  const window = binding.observation_window ?? "trailing";
+  if (!OBSERVATION_WINDOWS.includes(window)) {
+    throw new WorkerError("observation-window-invalid", `Observation window ${window} is not supported.`);
+  }
+  if (window === "trailing") return deriveBindingPeriod(binding.refresh_interval, now);
+  const timeZone = binding.location_timezone;
+  if (typeof timeZone !== "string" || timeZone.trim() === "") {
+    throw new WorkerError("timezone-unavailable", "Calendar observation windows require the bound location timezone.");
+  }
+  const end = new Date(Math.floor(now.getTime() / 60_000) * 60_000);
+  const local = zonedParts(end, timeZone);
+  const anchor = window === "mtd"
+    ? { year: local.year, month: local.month, day: 1 }
+    : { year: local.year, month: local.month, day: local.day };
+  const start = zonedTimeToUtc(anchor, timeZone);
+  if (!(start.getTime() < end.getTime())) {
+    throw new WorkerError("observation-period-empty", "The calendar observation window is empty at this instant.");
+  }
+  return { start, end };
+}
+
 async function alreadyMaterialized(supabase, organizationId, bindingId, idempotencyKey) {
   const { data, error } = await supabase.from("kpi_observations").select("id")
     .eq("organization_id", organizationId).eq("binding_id", bindingId)
@@ -223,7 +292,7 @@ async function loadServiceTitanConnection(supabase, organizationId, connectionId
 }
 
 async function processEndpointRecipeBinding(supabase, binding, dryRun) {
-  const period = deriveBindingPeriod(binding.refresh_interval);
+  const period = deriveObservationPeriod(binding);
   const idempotencyKey = makeEndpointObservationIdempotencyKey({
     organizationId: binding.organization_id,
     bindingId: binding.binding_id,
@@ -266,7 +335,7 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
 }
 
 async function processCustomEndpointBinding(supabase, binding, dryRun) {
-  const period = deriveBindingPeriod(binding.refresh_interval);
+  const period = deriveObservationPeriod(binding);
   const idempotencyKey = makeEndpointObservationIdempotencyKey({
     organizationId: binding.organization_id,
     bindingId: binding.binding_id,
@@ -317,7 +386,7 @@ async function processCustomEndpointBinding(supabase, binding, dryRun) {
 }
 
 async function processDomoBinding(supabase, binding, dryRun) {
-  const period = deriveBindingPeriod(binding.refresh_interval);
+  const period = deriveObservationPeriod(binding);
   const idempotencyKey = makeEndpointObservationIdempotencyKey({
     organizationId: binding.organization_id,
     bindingId: binding.binding_id,

@@ -442,6 +442,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_observation_window_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260820002500_binding_observation_windows' then
+    raise exception 'observation window release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -459,7 +466,8 @@ begin
       'public.get_endpoint_ingestion_release_readiness()'::pg_catalog.regprocedure,
       'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure,
       'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure
+      'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -510,7 +518,8 @@ begin
       'public.create_portfolio_brand_organization(text,text)'::pg_catalog.regprocedure,
       'public.is_portfolio_owner()'::pg_catalog.regprocedure,
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
-      'public.generate_catalog_recipe_bindings(uuid)'::pg_catalog.regprocedure
+      'public.generate_catalog_recipe_bindings(uuid)'::pg_catalog.regprocedure,
+      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;

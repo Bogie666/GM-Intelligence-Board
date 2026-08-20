@@ -174,8 +174,8 @@ function AdditionalBindingForm({ mode, tenant, workspace }: { mode: "endpoint_re
     ? selectedRecipePolicies.map((policy) => policy.refresh_interval)
     : mode === "domo_dataset" ? ["24h"] : ["4h", "12h", "24h"];
   const kpis = workspace.kpiDefinitions.filter((definition) => isDomo ? definition.type === "external" && definition.external_source?.provider === "domo" : definition.type === "service_titan");
-  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId && binding.location_id === locationId);
-  const immutableExisting = existingBinding?.approval_status === "approved" || existingBinding?.approval_status === "archived";
+  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId && binding.location_id === locationId && binding.approval_status !== "archived");
+  const immutableExisting = existingBinding?.approval_status === "approved";
   const title = mode === "endpoint_recipe" ? "Endpoint recipe binding" : mode === "custom_endpoint" ? "Custom endpoint binding" : "Domo dataset binding";
   return <section className="production-panel">
     <div className="production-panel-heading"><div><span>Exact-location governed method</span><h2>{title}</h2></div></div>
@@ -190,8 +190,9 @@ function AdditionalBindingForm({ mode, tenant, workspace }: { mode: "endpoint_re
         <input type="hidden" name="endpointRecipeId" value={recipeId} /><input type="hidden" name="endpointRecipeVersion" value={recipeVersion} />
       </> : <label>{isDomo ? "Dataset source" : "Custom endpoint source"}<select name={isDomo ? "domoDatasetSourceId" : "customEndpointSourceId"} required value={sourceId} disabled={!connectionId} onChange={(event) => setSourceId(event.target.value)}><option value="">{connectionId ? "Choose source" : "Choose a connection first"}</option>{(isDomo ? domoSources : customSources).map((source) => <option key={source.id} value={source.id}>{source.name} · {source.lifecycle}</option>)}</select></label>}
       <label>Refresh cadence<select name="refreshInterval" required value={refreshInterval} disabled={mode === "endpoint_recipe" && !recipeKey} onChange={(event) => setRefreshInterval(event.target.value)}><option value="" disabled>{recipeKey ? "Choose cadence" : "Choose a recipe first"}</option>{cadenceOptions.map((value) => <option key={value} value={value}>Every {value.replace("h", " hours")}</option>)}</select></label>
+      <label>Observation window<select name="observationWindow" defaultValue="trailing"><option value="trailing">Trailing cadence window</option><option value="today">Location-local day to date</option><option value="mtd">Location-local month to date</option></select><small>Calendar windows anchor each observation to the bound location&apos;s timezone; the cadence still controls how often the worker refreshes it.</small></label>
       {existingBinding ? immutableExisting
-        ? <div className="production-notice error span-two" role="alert">The existing {existingBinding.approval_status} binding is immutable. Choose another KPI/location pair.</div>
+        ? <div className="production-notice error span-two" role="alert">The existing approved binding is immutable. Archive it from the trusted operator path before creating a replacement draft.</div>
         : <label className="production-checkbox-row span-two"><input type="checkbox" name="confirmReplacement" value="replace" required /><span><strong>Replace existing {existingBinding.approval_status} binding</strong><small>This replaces binding {existingBinding.id} for the same KPI and location with a new draft.</small></span></label>
         : null}
       <div className="production-form-footer"><span>Changing source method resets approval and clears every stale source-family fingerprint. Worker evidence is required before ingestion.</span><Submit disabled={immutableExisting}>Save draft binding</Submit></div>

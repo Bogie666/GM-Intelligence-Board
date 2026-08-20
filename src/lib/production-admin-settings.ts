@@ -45,6 +45,7 @@ export interface ProductionKpiBinding {
   location_id: string;
   connection_id: string | null;
   source_method: string | null;
+  observation_window: string;
   endpoint_recipe_id: string | null;
   endpoint_recipe_version: number | null;
   report_source_id: string | null;
@@ -200,7 +201,7 @@ export async function loadProductionAdminSettings(
       .select("id, kpi_key, title, type, value_kind, lifecycle, version, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published").order("title"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, connection_id, source_method, endpoint_recipe_id, endpoint_recipe_version, report_source_id, custom_endpoint_source_id, domo_connection_id, domo_dataset_source_id, refresh_interval, report_reduction, value_field, numerator_field, denominator_field, approval_status, updated_at")
+      .select("id, kpi_definition_id, location_id, connection_id, source_method, observation_window, endpoint_recipe_id, endpoint_recipe_version, report_source_id, custom_endpoint_source_id, domo_connection_id, domo_dataset_source_id, refresh_interval, report_reduction, value_field, numerator_field, denominator_field, approval_status, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("kpi_targets")
       .select("id, location_id, kpi_definition_id, metric_key, version, target_value, warning_value, effective_from, effective_to, dimensions, lifecycle, updated_at")

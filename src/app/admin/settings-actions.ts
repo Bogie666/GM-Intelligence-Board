@@ -30,6 +30,7 @@ import { validateUuid } from "@/lib/tenant-context";
 import type { AdminActionState } from "./actions";
 
 const SOURCE_METHODS = new Set(["endpoint_recipe", "saved_report", "custom_endpoint", "domo_dataset"]);
+const OBSERVATION_WINDOWS = new Set(["trailing", "today", "mtd"]);
 const REPORT_REDUCTIONS = new Set(["sum", "average", "count", "ratio"]);
 const ENDPOINT_REFRESH_INTERVALS = new Set(["15m", "30m", "1h", "4h", "12h", "24h"]);
 const REPORT_REFRESH_INTERVALS = new Set(["4h", "12h", "24h"]);
@@ -525,10 +526,14 @@ export async function saveKpiBindingAction(
   const locationId = input(formData, "locationId");
   const sourceMethod = input(formData, "sourceMethod");
   const refreshInterval = input(formData, "refreshInterval");
+  const observationWindow = input(formData, "observationWindow") || "trailing";
   const parameterValues = parseConfigurationJson(rawInput(formData, "parameterValues") || "{}", "object");
   const businessUnitMappings = parseConfigurationJson(rawInput(formData, "businessUnitMappings") || "{}", "object");
   if (![kpiDefinitionId, locationId].every(validateUuid) || !SOURCE_METHODS.has(sourceMethod)) {
     return failure("Choose a published KPI, active location, and supported source method.");
+  }
+  if (!OBSERVATION_WINDOWS.has(observationWindow)) {
+    return failure("Choose a supported observation window: trailing cadence, local day, or local month-to-date.");
   }
   if (!parameterValues.ok || !businessUnitMappings.ok) {
     return failure("Correct the binding JSON and try again.", {
@@ -544,7 +549,7 @@ export async function saveKpiBindingAction(
       .eq("organization_id", writable.organizationId).eq("id", locationId).eq("status", "active").maybeSingle(),
     writable.supabase.from("custom_kpi_location_bindings").select("id, approval_status")
       .eq("organization_id", writable.organizationId).eq("kpi_definition_id", kpiDefinitionId)
-      .eq("location_id", locationId).maybeSingle(),
+      .eq("location_id", locationId).neq("approval_status", "archived").maybeSingle(),
   ]);
   if (!definition || !location) return failure("The selected published KPI or exact tenant location is unavailable.");
   if (existingBinding?.approval_status === "approved" || existingBinding?.approval_status === "archived") {
@@ -563,6 +568,7 @@ export async function saveKpiBindingAction(
     connection_id: null,
     service_titan_tenant_id: null,
     source_method: sourceMethod,
+    observation_window: observationWindow,
     endpoint_recipe_id: null,
     endpoint_recipe_version: null,
     report_source_id: null,
@@ -694,8 +700,14 @@ export async function saveKpiBindingAction(
     }
   }
 
-  const { error } = await writable.supabase.from("custom_kpi_location_bindings")
-    .upsert(row, { onConflict: "organization_id,kpi_definition_id,location_id" });
+  // Exact-location uniqueness is enforced by a partial unique index over
+  // non-archived bindings, which PostgREST upsert cannot infer; the existing
+  // draft (already confirmed for replacement) is updated in place instead.
+  const { error } = existingBinding
+    ? await writable.supabase.from("custom_kpi_location_bindings")
+      .update(row).eq("organization_id", writable.organizationId).eq("id", existingBinding.id)
+      .in("approval_status", ["draft", "rejected"])
+    : await writable.supabase.from("custom_kpi_location_bindings").insert(row);
   if (error) return databaseFailure("KPI source binding", error);
   refreshAdmin();
   return { status: "success", message: "Fresh draft exact-location binding saved. Worker evidence is still required before approval." };

@@ -11,7 +11,7 @@ import {
   makeEndpointObservationIdempotencyKey,
   validateCustomEndpointContract,
 } from "./lib/servicetitan-endpoint-ingestion.mjs";
-import { deriveBindingPeriod } from "./run-data-source-ingestion.mjs";
+import { deriveBindingPeriod, deriveObservationPeriod } from "./run-data-source-ingestion.mjs";
 
 const PERIOD = {
   start: new Date("2026-08-01T00:00:00.000Z"),
@@ -412,4 +412,62 @@ test("worker period math produces trailing minute-aligned cadence windows", () =
   const daily = deriveBindingPeriod("24h", now);
   assert.equal(daily.start.toISOString(), "2026-08-19T15:37:00.000Z");
   assert.throws(() => deriveBindingPeriod("7d", now));
+});
+
+test("observation windows: trailing falls back to cadence math", () => {
+  const now = new Date("2026-08-20T15:37:42.500Z");
+  const period = deriveObservationPeriod({ observation_window: "trailing", refresh_interval: "1h" }, now);
+  assert.equal(period.start.toISOString(), "2026-08-20T14:37:00.000Z");
+  assert.equal(period.end.toISOString(), "2026-08-20T15:37:00.000Z");
+  const legacy = deriveObservationPeriod({ refresh_interval: "15m" }, now);
+  assert.equal(legacy.start.toISOString(), "2026-08-20T15:22:00.000Z");
+});
+
+test("observation windows: mtd anchors to local first-of-month midnight (CDT)", () => {
+  const now = new Date("2026-08-20T15:37:42.500Z");
+  const period = deriveObservationPeriod({
+    observation_window: "mtd", refresh_interval: "15m", location_timezone: "America/Chicago",
+  }, now);
+  // 2026-08-01T00:00:00 America/Chicago (CDT, UTC-5) = 05:00Z.
+  assert.equal(period.start.toISOString(), "2026-08-01T05:00:00.000Z");
+  assert.equal(period.end.toISOString(), "2026-08-20T15:37:00.000Z");
+});
+
+test("observation windows: mtd respects standard time offsets (CST)", () => {
+  const now = new Date("2026-01-15T12:00:00.000Z");
+  const period = deriveObservationPeriod({
+    observation_window: "mtd", refresh_interval: "1h", location_timezone: "America/Chicago",
+  }, now);
+  // 2026-01-01T00:00:00 America/Chicago (CST, UTC-6) = 06:00Z.
+  assert.equal(period.start.toISOString(), "2026-01-01T06:00:00.000Z");
+});
+
+test("observation windows: today anchors to local midnight even across UTC date lines", () => {
+  // 02:30Z on the 21st is still 21:30 on the 20th in Chicago.
+  const now = new Date("2026-08-21T02:30:00.000Z");
+  const period = deriveObservationPeriod({
+    observation_window: "today", refresh_interval: "15m", location_timezone: "America/Chicago",
+  }, now);
+  assert.equal(period.start.toISOString(), "2026-08-20T05:00:00.000Z");
+  assert.equal(period.end.toISOString(), "2026-08-21T02:30:00.000Z");
+});
+
+test("observation windows: calendar windows fail closed without a valid timezone", () => {
+  const now = new Date("2026-08-20T15:37:00.000Z");
+  assert.throws(() => deriveObservationPeriod({ observation_window: "mtd", refresh_interval: "1h" }, now),
+    /timezone/i);
+  assert.throws(() => deriveObservationPeriod({
+    observation_window: "mtd", refresh_interval: "1h", location_timezone: "Mars/Olympus_Mons",
+  }, now), /timezone/i);
+  assert.throws(() => deriveObservationPeriod({
+    observation_window: "yearly", refresh_interval: "1h", location_timezone: "America/Chicago",
+  }, now), /not supported/i);
+});
+
+test("observation windows: empty calendar window at exact local midnight fails closed", () => {
+  // Exactly local midnight in Chicago: 05:00:00Z on the same local day.
+  const now = new Date("2026-08-20T05:00:00.000Z");
+  assert.throws(() => deriveObservationPeriod({
+    observation_window: "today", refresh_interval: "15m", location_timezone: "America/Chicago",
+  }, now), /empty/i);
 });
