@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { openPortfolioBrandAction } from "@/app/portfolio/actions";
+import { PortfolioBrandOnboarding } from "@/components/portfolio-brand-onboarding";
 import { ProductionNavigation } from "@/components/production-navigation";
 import { SignOutButton } from "@/components/sign-out-button";
 import { getAppConfig } from "@/lib/env";
 import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
-import { getPortfolioOverview, type PortfolioBrandSummary } from "@/lib/portfolio-context";
+import { getPortfolioOverview, isPortfolioOwner, type PortfolioBrandSummary } from "@/lib/portfolio-context";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,11 @@ const STAGE_NOTES: Record<PortfolioBrandSummary["stage"], string> = {
 };
 
 export default async function PortfolioPage() {
-  const [result, tenantAuth] = await Promise.all([getPortfolioOverview(), getTenantAuthContext()]);
+  const [result, tenantAuth, portfolioOwner] = await Promise.all([
+    getPortfolioOverview(),
+    getTenantAuthContext(),
+    isPortfolioOwner(),
+  ]);
   if (result.ok === false && result.reason === "unauthenticated") redirect("/login?next=%2Fportfolio");
   if (result.ok === false) {
     return (
@@ -75,6 +80,8 @@ export default async function PortfolioPage() {
           <strong>Governed rollup boundary</strong>
           <p>This portfolio view combines additive readiness and coverage counts only. KPI values, targets, percentages, and currency are not combined until each metric has an approved cross-brand aggregation contract.</p>
         </section>
+
+        {portfolioOwner ? <PortfolioBrandOnboarding /> : null}
 
         <section className="production-section">
           <div className="production-section-title"><div><span>Verified portfolio membership</span><h2>Brands</h2></div><strong>{portfolio.brands.length}</strong></div>

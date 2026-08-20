@@ -151,3 +151,17 @@ export async function getPortfolioOverview(): Promise<PortfolioOverviewResult> {
   const portfolio = parseRows(data);
   return portfolio ? { ok: true, portfolio } : { ok: false, reason: "unavailable" };
 }
+
+/**
+ * Fail-closed portfolio-owner check for UI gating. Any error, missing session,
+ * or non-boolean database answer renders as "not the owner". The authoritative
+ * boundary remains the security-definer RPCs that re-verify ownership on every
+ * mutation.
+ */
+export async function isPortfolioOwner(): Promise<boolean> {
+  const supabase = await createServerSupabaseClient();
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData.user) return false;
+  const { data, error } = await supabase.rpc("is_portfolio_owner");
+  return !error && data === true;
+}

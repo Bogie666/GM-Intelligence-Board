@@ -403,6 +403,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_portfolio_onboarding_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260820002300_portfolio_brand_onboarding' then
+    raise exception 'portfolio onboarding release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -418,7 +425,8 @@ begin
       'public.get_division_release_readiness()'::pg_catalog.regprocedure,
       'public.get_region_release_readiness()'::pg_catalog.regprocedure,
       'public.get_endpoint_ingestion_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure
+      'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -464,7 +472,10 @@ begin
       'public.create_service_titan_custom_endpoint_source(uuid,uuid,text,text,text,text,jsonb,text,text,text)'::pg_catalog.regprocedure,
       'public.archive_service_titan_custom_endpoint_source(uuid,uuid,integer)'::pg_catalog.regprocedure,
       'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text)'::pg_catalog.regprocedure,
-      'public.archive_domo_dataset_source(uuid,uuid,integer)'::pg_catalog.regprocedure
+      'public.archive_domo_dataset_source(uuid,uuid,integer)'::pg_catalog.regprocedure,
+      'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure,
+      'public.create_portfolio_brand_organization(text,text)'::pg_catalog.regprocedure,
+      'public.is_portfolio_owner()'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;
