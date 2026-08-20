@@ -7,7 +7,7 @@ vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({ rpc })),
 }));
 
-const EXPECTED = "20260819001700_tenant_managed_divisions";
+const EXPECTED = "20260819001800_location_regions";
 
 function rpcResult(data: unknown, error: unknown = null) {
   return { abortSignal: vi.fn().mockResolvedValue({ data, error }) };
@@ -21,7 +21,7 @@ describe("database release health", () => {
     delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   });
 
-  it("accepts only the division-native schema-017 readiness contract", async () => {
+  it("accepts only the region-aware schema-018 readiness contract", async () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://project.supabase.co";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "public-anon-key";
     rpc.mockReturnValue(rpcResult([{ ready: true, release_marker: EXPECTED }]));
@@ -32,10 +32,10 @@ describe("database release health", () => {
     expect(health.schemaReady).toBe(true);
     expect(health.releaseMarker).toBe(EXPECTED);
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc).toHaveBeenCalledWith("get_division_release_readiness");
+    expect(rpc).toHaveBeenCalledWith("get_region_release_readiness");
   });
 
-  it("fails closed when schema-017 readiness is missing instead of accepting legacy schema 016", async () => {
+  it("fails closed when schema-018 readiness is missing instead of accepting legacy contracts", async () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://project.supabase.co";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "public-anon-key";
     rpc.mockReturnValue(rpcResult(null, { code: "PGRST202" }));
@@ -47,6 +47,7 @@ describe("database release health", () => {
     expect(health.reachable).toBe(false);
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc).not.toHaveBeenCalledWith("get_release_readiness");
+    expect(rpc).not.toHaveBeenCalledWith("get_division_release_readiness");
   });
 
   it("rejects a ready legacy marker returned from the new RPC", async () => {

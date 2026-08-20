@@ -24,6 +24,7 @@ export function parseProductionAdminSection(
 
 export interface AdminSetupSignals {
   activeLocationCount: number;
+  activeLocationsMissingRegionCount: number;
   enabledConnectionCount: number;
   hasValidatedConnection: boolean;
   assignedActiveLocationCount: number;
@@ -43,7 +44,7 @@ export interface AdminSetupMilestone {
  */
 export function getAdminSetupMilestones(signals: AdminSetupSignals): AdminSetupMilestone[] {
   return [
-    { id: "locations", complete: signals.activeLocationCount > 0 },
+    { id: "locations", complete: signals.activeLocationCount > 0 && signals.activeLocationsMissingRegionCount === 0 },
     { id: "credentials", complete: signals.enabledConnectionCount > 0 },
     { id: "validation", complete: signals.hasValidatedConnection },
     { id: "assignments", complete: signals.assignedActiveLocationCount > 0 },

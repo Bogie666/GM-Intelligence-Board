@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { getSafeRedirectPath } from "@/lib/auth";
-import { getAppConfig } from "@/lib/env";
+import { getSafeRedirectPath } from "@/lib/safe-redirect";
+import { getAppConfig } from "@/lib/app-config";
 
 function withRefreshedCookies(source: NextResponse, destination: NextResponse): NextResponse {
   source.cookies.getAll().forEach((cookie) => destination.cookies.set(cookie));

@@ -16,6 +16,7 @@ describe("production admin navigation", () => {
   it("derives setup progress only from persisted configuration signals", () => {
     const milestones = getAdminSetupMilestones({
       activeLocationCount: 2,
+      activeLocationsMissingRegionCount: 0,
       enabledConnectionCount: 1,
       hasValidatedConnection: false,
       assignedActiveLocationCount: 1,
@@ -36,6 +37,21 @@ describe("production admin navigation", () => {
     expect(milestones.filter((milestone) => milestone.complete)).toHaveLength(3);
   });
 
+  it("keeps locations incomplete while an active legacy location has no Region", () => {
+    const milestones = getAdminSetupMilestones({
+      activeLocationCount: 2,
+      activeLocationsMissingRegionCount: 1,
+      enabledConnectionCount: 1,
+      hasValidatedConnection: true,
+      assignedActiveLocationCount: 2,
+      discoveredBusinessUnitCount: 2,
+      activeDivisionCount: 1,
+      mappedBusinessUnitCount: 2,
+    });
+
+    expect(milestones.find((milestone) => milestone.id === "locations")?.complete).toBe(false);
+  });
+
   it.each([
     [0, 0, false],
     [2, 0, false],
@@ -48,6 +64,7 @@ describe("production admin navigation", () => {
     (discoveredBusinessUnitCount, mappedBusinessUnitCount, complete) => {
       const milestones = getAdminSetupMilestones({
         activeLocationCount: 1,
+        activeLocationsMissingRegionCount: 0,
         enabledConnectionCount: 1,
         hasValidatedConnection: true,
         assignedActiveLocationCount: 1,

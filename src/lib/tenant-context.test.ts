@@ -27,6 +27,7 @@ describe("tenant control-plane validation", () => {
         brandName: "  Mountain Air  ",
         displayName: "  Denver West  ",
         timezone: " America/Denver ",
+        region: " Southwest ",
       }),
     ).toEqual({
       ok: true,
@@ -35,6 +36,7 @@ describe("tenant control-plane validation", () => {
         brandName: "Mountain Air",
         displayName: "Denver West",
         timezone: "America/Denver",
+        region: "southwest",
       },
     });
   });
@@ -50,11 +52,13 @@ describe("tenant control-plane validation", () => {
   });
 
   it.each([
-    [{ locationKey: "a", brandName: "Brand", displayName: "Place", timezone: "UTC" }, "locationKey"],
-    [{ locationKey: "valid-key", brandName: "", displayName: "Place", timezone: "UTC" }, "brandName"],
-    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Mars/Olympus" }, "timezone"],
-    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Europe/London" }, "timezone"],
-    [{ locationKey: "valid-key", brandName: "Brand\u0000", displayName: "Place", timezone: "UTC" }, "brandName"],
+    [{ locationKey: "a", brandName: "Brand", displayName: "Place", timezone: "UTC", region: "west" }, "locationKey"],
+    [{ locationKey: "valid-key", brandName: "", displayName: "Place", timezone: "UTC", region: "west" }, "brandName"],
+    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Mars/Olympus", region: "west" }, "timezone"],
+    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "Europe/London", region: "west" }, "timezone"],
+    [{ locationKey: "valid-key", brandName: "Brand\u0000", displayName: "Place", timezone: "UTC", region: "west" }, "brandName"],
+    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "America/Chicago", region: "southeast" }, "region"],
+    [{ locationKey: "valid-key", brandName: "Brand", displayName: "Place", timezone: "America/Chicago", region: "" }, "region"],
   ])("rejects invalid location input %#", (input, field) => {
     const result = validateLocationInput(input);
     expect(result.ok).toBe(false);
@@ -279,8 +283,8 @@ describe("getTenantReadiness", () => {
     expect(
       getTenantReadiness(
         [
-          { id: "location-1", status: "active" },
-          { id: "location-2", status: "archived" },
+          { id: "location-1", status: "active", region: "west" },
+          { id: "location-2", status: "archived", region: null },
         ],
         [
           { id: "connection-1", status: "needs_attention" },
@@ -290,6 +294,7 @@ describe("getTenantReadiness", () => {
       ),
     ).toEqual({
       activeLocationCount: 1,
+      activeLocationsMissingRegionCount: 0,
       enabledConnectionCount: 1,
       assignedActiveLocationCount: 1,
       isConfigured: true,
@@ -300,10 +305,22 @@ describe("getTenantReadiness", () => {
   it("does not claim configuration or validation without persisted evidence", () => {
     expect(getTenantReadiness([], [], [])).toEqual({
       activeLocationCount: 0,
+      activeLocationsMissingRegionCount: 0,
       enabledConnectionCount: 0,
       assignedActiveLocationCount: 0,
       isConfigured: false,
       hasValidatedConnection: false,
+    });
+  });
+
+  it("keeps setup incomplete until every active location has an explicit region", () => {
+    expect(getTenantReadiness(
+      [{ id: "location-1", status: "active", region: null }],
+      [{ id: "connection-1", status: "ready", last_validated_at: "2026-08-19T12:00:00Z" }],
+      [{ connection_id: "connection-1", location_id: "location-1", revoked_at: null }],
+    )).toMatchObject({
+      activeLocationsMissingRegionCount: 1,
+      isConfigured: false,
     });
   });
 });

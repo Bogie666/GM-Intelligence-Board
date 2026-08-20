@@ -13,7 +13,7 @@ export interface DatabaseHealth {
 
 let healthClient: SupabaseClient | undefined;
 let healthClientIdentity = "";
-const EXPECTED_SCHEMA_RELEASE = "20260819001700_tenant_managed_divisions";
+const EXPECTED_SCHEMA_RELEASE = "20260819001800_location_regions";
 
 function publicServerEnvironment(): { url: string; anonKey: string } | undefined {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
@@ -57,7 +57,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealth> {
   const timeout = setTimeout(() => controller.abort(), 5_000);
 
   try {
-    const { data, error } = await client.rpc("get_division_release_readiness").abortSignal(controller.signal);
+    const { data, error } = await client.rpc("get_region_release_readiness").abortSignal(controller.signal);
     const latencyMs = Date.now() - startedAt;
     if (error) {
       return {

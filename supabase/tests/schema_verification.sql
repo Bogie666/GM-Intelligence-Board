@@ -280,6 +280,8 @@ begin
      or not pg_catalog.has_function_privilege('authenticated', 'public.get_release_readiness()', 'EXECUTE')
      or not pg_catalog.has_function_privilege('anon', 'public.get_division_release_readiness()', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated', 'public.get_division_release_readiness()', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('anon', 'public.get_region_release_readiness()', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated', 'public.get_region_release_readiness()', 'EXECUTE')
      or pg_catalog.has_function_privilege('anon', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
      or pg_catalog.has_function_privilege('authenticated', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('service_role', 'public.bootstrap_tenant_owner(uuid,text,text,text,text)', 'EXECUTE')
@@ -343,6 +345,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_region_release_readiness() readiness;
+  if release_ready is null
+     or release_marker is distinct from '20260819001800_location_regions' then
+    raise exception 'region release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -355,7 +364,8 @@ begin
     and pg_catalog.has_function_privilege('anon', function.oid, 'EXECUTE')
     and function.oid not in (
       'public.get_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_division_release_readiness()'::pg_catalog.regprocedure
+      'public.get_division_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_region_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -369,6 +379,7 @@ begin
     and not (function.oid = any (array[
       'public.get_release_readiness()'::pg_catalog.regprocedure,
       'public.get_division_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_region_release_readiness()'::pg_catalog.regprocedure,
       'public.is_active_organization_member(uuid)'::pg_catalog.regprocedure,
       'public.has_organization_role(uuid,text[])'::pg_catalog.regprocedure,
       'public.can_read_profile(uuid)'::pg_catalog.regprocedure,
@@ -564,6 +575,36 @@ begin
 end
 $$;
 
+do $location_region_catalog$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'locations'
+      and column_name = 'region' and data_type = 'text' and is_nullable = 'YES'
+  ) then
+    raise exception 'locations.region rolling-compatible column is missing or has the wrong shape';
+  end if;
+  if not exists (
+    select 1
+    from pg_catalog.pg_constraint constraint_record
+    join pg_catalog.pg_class relation on relation.oid = constraint_record.conrelid
+    join pg_catalog.pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public' and relation.relname = 'locations'
+      and constraint_record.conname = 'locations_region_allowed'
+      and constraint_record.contype = 'c'
+  ) then
+    raise exception 'locations region allowlist constraint is missing';
+  end if;
+  if not exists (
+    select 1 from pg_catalog.pg_indexes
+    where schemaname = 'public' and tablename = 'locations'
+      and indexname = 'locations_organization_region_active_idx'
+  ) then
+    raise exception 'active location region index is missing';
+  end if;
+end
+$location_region_catalog$;
+
 -- ---------- Disposable behavioral/RLS verification ----------
 
 -- Fixed UUIDs make failures reproducible. These rows exist only until the final ROLLBACK.
@@ -624,6 +665,34 @@ insert into public.locations (
    'tenant-b-main', 'Tenant B', 'Tenant B Main', 'America/Chicago'),
   ('a2000000-0000-4000-8000-000000000003', 'a0000000-0000-4000-8000-000000000001',
    'tenant-a-observation', 'Tenant A', 'Tenant A Observation', 'America/New_York');
+
+do $location_region_behavior$
+begin
+  update public.locations
+  set region = 'west'
+  where id = 'a2000000-0000-4000-8000-000000000001';
+  if not exists (
+    select 1 from public.locations
+    where id = 'a2000000-0000-4000-8000-000000000001' and region = 'west'
+  ) then
+    raise exception 'governed location region was not persisted';
+  end if;
+  if not exists (
+    select 1 from public.locations
+    where id = 'a2000000-0000-4000-8000-000000000003' and region is null
+  ) then
+    raise exception 'rolling-compatible null location region was not preserved';
+  end if;
+  begin
+    update public.locations
+    set region = 'southeast'
+    where id = 'b3000000-0000-4000-8000-000000000002';
+    raise exception 'invalid location region unexpectedly passed the database allowlist';
+  exception
+    when check_violation then null;
+  end;
+end
+$location_region_behavior$;
 
 -- Cross-layer observation fixture: prove the deployed 64-hex idempotency contract accepts
 -- a fully governed endpoint-recipe observation instead of validating worker/schema formats
@@ -1579,6 +1648,11 @@ begin
   if release_ready is distinct from true or release_marker is distinct from '20260819001700_tenant_managed_divisions' then
     raise exception 'portfolio release readiness failed after fixture attachment';
   end if;
+  select readiness.ready, readiness.release_marker into release_ready, release_marker
+  from public.get_region_release_readiness() readiness;
+  if release_ready is distinct from true or release_marker is distinct from '20260819001800_location_regions' then
+    raise exception 'region release readiness failed after fixture attachment';
+  end if;
 end
 $portfolio_service_setup$;
 reset role;
@@ -1684,6 +1758,7 @@ reset role;
 set local role anon;
 select * from public.get_release_readiness();
 select * from public.get_division_release_readiness();
+select * from public.get_region_release_readiness();
 reset role;
 
 -- Human-readable summaries are useful in CI logs after all assertions pass.

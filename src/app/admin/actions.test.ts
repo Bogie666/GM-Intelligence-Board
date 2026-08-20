@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   createServiceRoleSupabaseClient: vi.fn(),
   executeValidation: vi.fn(),
   executeDiscovery: vi.fn(),
+  validateLocationInput: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -35,7 +36,7 @@ vi.mock("@/lib/tenant-context", () => ({
       ? { ok: true, value: { name } }
       : { ok: false, fieldErrors: { name: "invalid" } };
   },
-  validateLocationInput: vi.fn(),
+  validateLocationInput: mocks.validateLocationInput,
   validateOrganizationInput: vi.fn(),
   validateUuid: (value: unknown) => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value),
 }));
@@ -49,9 +50,11 @@ vi.mock("@/lib/servicetitan-workers", () => ({
 
 import {
   createDivisionAction,
+  createLocationAction,
   replaceBusinessUnitMappingsAction,
   runBusinessUnitDiscoveryAction,
   setDivisionStatusAction,
+  updateLocationAction,
   validateServiceTitanConnectionAction,
 } from "./actions";
 
@@ -187,6 +190,58 @@ describe("in-product ServiceTitan server actions", () => {
       errorCode: "discovery_failed",
     });
     expect(JSON.stringify(state)).not.toMatch(/raw provider payload|internal revision/i);
+  });
+
+  it("persists the governed region on location creation", async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn().mockReturnValue({ insert });
+    mocks.getTenantAuthContext.mockResolvedValue({ ...authenticatedContext("admin"), supabase: { from, rpc: vi.fn() } });
+    mocks.validateLocationInput.mockReturnValue({
+      ok: true,
+      value: { locationKey: "dallas", brandName: "LEX Air", displayName: "Dallas", timezone: "America/Chicago", region: "southwest" },
+    });
+    const data = new FormData();
+    data.set("locationKey", "dallas");
+    data.set("brandName", "LEX Air");
+    data.set("displayName", "Dallas");
+    data.set("timezone", "America/Chicago");
+    data.set("region", "southwest");
+
+    const state = await createLocationAction(INITIAL_STATE, data);
+
+    expect(mocks.validateLocationInput).toHaveBeenCalledWith(expect.objectContaining({ region: "southwest" }));
+    expect(from).toHaveBeenCalledWith("locations");
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ organization_id: ORGANIZATION_ID, region: "southwest" }));
+    expect(state).toEqual({ status: "success", message: "Location added to the tenant." });
+  });
+
+  it("persists a governed region on a tenant-scoped location update", async () => {
+    const chain: Record<string, ReturnType<typeof vi.fn>> = {};
+    chain.update = vi.fn(() => chain);
+    chain.eq = vi.fn(() => chain);
+    chain.neq = vi.fn(() => chain);
+    chain.select = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn().mockResolvedValue({ data: { id: LOCATION_ID }, error: null });
+    const from = vi.fn().mockReturnValue(chain);
+    mocks.getTenantAuthContext.mockResolvedValue({ ...authenticatedContext("owner"), supabase: { from, rpc: vi.fn() } });
+    mocks.validateLocationInput.mockReturnValue({
+      ok: true,
+      value: { locationKey: "rockwall", brandName: "LEX Air", displayName: "Rockwall", timezone: "America/Chicago", region: "southwest" },
+    });
+    const data = new FormData();
+    data.set("locationId", LOCATION_ID);
+    data.set("locationKey", "rockwall");
+    data.set("brandName", "LEX Air");
+    data.set("displayName", "Rockwall");
+    data.set("timezone", "America/Chicago");
+    data.set("region", "southwest");
+
+    const state = await updateLocationAction(INITIAL_STATE, data);
+
+    expect(chain.update).toHaveBeenCalledWith(expect.objectContaining({ region: "southwest" }));
+    expect(chain.eq).toHaveBeenCalledWith("organization_id", ORGANIZATION_ID);
+    expect(chain.eq).toHaveBeenCalledWith("id", LOCATION_ID);
+    expect(state).toEqual({ status: "success", message: "Location changes saved." });
   });
 
   it("creates a normalized tenant division through the narrow authenticated RPC", async () => {

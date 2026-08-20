@@ -128,6 +128,7 @@ export async function createLocationAction(
     brandName: input(formData, "brandName"),
     displayName: input(formData, "displayName"),
     timezone: input(formData, "timezone"),
+    region: input(formData, "region"),
   });
   if (!validation.ok) {
     return { status: "error", message: "Correct the location fields and try again.", fieldErrors: validation.fieldErrors };
@@ -139,6 +140,7 @@ export async function createLocationAction(
     brand_name: validation.value.brandName,
     display_name: validation.value.displayName,
     timezone: validation.value.timezone,
+    region: validation.value.region,
     status: "active",
     presentation: {},
   });
@@ -162,6 +164,7 @@ export async function updateLocationAction(
     brandName: input(formData, "brandName"),
     displayName: input(formData, "displayName"),
     timezone: input(formData, "timezone"),
+    region: input(formData, "region"),
   });
   if (!validation.ok) {
     return { status: "error", message: "Correct the location fields and try again.", fieldErrors: validation.fieldErrors };
@@ -174,6 +177,7 @@ export async function updateLocationAction(
       brand_name: validation.value.brandName,
       display_name: validation.value.displayName,
       timezone: validation.value.timezone,
+      region: validation.value.region,
     })
     .eq("organization_id", writable.organizationId)
     .eq("id", locationId)

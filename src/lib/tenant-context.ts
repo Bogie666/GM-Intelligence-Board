@@ -1,7 +1,10 @@
 import "server-only";
 
 import { getTenantAuthContext, type OrganizationRole, type TenantAccessOption } from "@/lib/auth";
+import { OPERATING_REGIONS, type OperatingRegion } from "./operating-regions";
 import type { SupabaseClient } from "@supabase/supabase-js";
+
+export { OPERATING_REGIONS, type OperatingRegion };
 
 const KEY_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -10,6 +13,7 @@ const SECRET_REFERENCE_PATTERN = /^(?:gcp-secret:\/\/projects\/[A-Za-z0-9][A-Za-
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 const UNICODE_CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
 const RESERVED_DIVISION_NAMES = new Set(["not mapped", "unmapped"]);
+const OPERATING_REGION_SET = new Set<string>(OPERATING_REGIONS);
 const UNITED_STATES_TIMEZONES = new Set([
   "America/New_York",
   "America/Chicago",
@@ -34,6 +38,7 @@ export interface LocationInput {
   brandName: string;
   displayName: string;
   timezone: string;
+  region: OperatingRegion;
 }
 
 export interface ConnectionInput {
@@ -86,6 +91,7 @@ export interface TenantLocation {
   brand_name: string;
   display_name: string;
   timezone: string;
+  region: OperatingRegion | null;
   status: "active" | "inactive" | "archived";
   presentation: Record<string, unknown>;
 }
@@ -201,6 +207,7 @@ export interface ProductionAdminConfiguration {
 
 export interface TenantReadiness {
   activeLocationCount: number;
+  activeLocationsMissingRegionCount: number;
   enabledConnectionCount: number;
   assignedActiveLocationCount: number;
   isConfigured: boolean;
@@ -338,6 +345,7 @@ export function validateLocationInput(input: Record<string, unknown>): Validatio
   const brandName = text(input.brandName);
   const displayName = text(input.displayName);
   const timezone = text(input.timezone);
+  const region = text(input.region).toLowerCase();
   const fieldErrors: Record<string, string> = {};
 
   if (!KEY_PATTERN.test(locationKey)) {
@@ -349,10 +357,13 @@ export function validateLocationInput(input: Record<string, unknown>): Validatio
   if (!UNITED_STATES_TIMEZONES.has(timezone)) {
     fieldErrors.timezone = "Choose a supported United States timezone.";
   }
+  if (!OPERATING_REGION_SET.has(region)) {
+    fieldErrors.region = "Choose West, Midwest, Northwest, or Southwest.";
+  }
 
   return Object.keys(fieldErrors).length > 0
     ? { ok: false, fieldErrors }
-    : { ok: true, value: { locationKey, brandName, displayName, timezone } };
+    : { ok: true, value: { locationKey, brandName, displayName, timezone, region: region as OperatingRegion } };
 }
 
 export function validateConnectionInput(input: Record<string, unknown>): ValidationResult<ConnectionInput> {
@@ -462,11 +473,14 @@ export function validateCredentialRotationInput(
 }
 
 export function getTenantReadiness(
-  locations: ReadonlyArray<Pick<TenantLocation, "id" | "status">>,
+  locations: ReadonlyArray<Pick<TenantLocation, "id" | "status" | "region">>,
   connections: ReadonlyArray<Pick<ServiceTitanConnection, "id" | "status"> & Partial<Pick<ServiceTitanConnection, "last_validated_at">>>,
   assignments: ReadonlyArray<Pick<ServiceTitanAssignment, "connection_id" | "location_id" | "revoked_at">>,
 ): TenantReadiness {
   const activeLocationIds = new Set(locations.filter((location) => location.status === "active").map((location) => location.id));
+  const activeLocationsMissingRegionCount = locations.filter(
+    (location) => location.status === "active" && location.region === null,
+  ).length;
   const enabledConnections = connections.filter(
     (connection) => connection.status !== "disabled" && connection.status !== "archived",
   );
@@ -484,10 +498,12 @@ export function getTenantReadiness(
 
   return {
     activeLocationCount: activeLocationIds.size,
+    activeLocationsMissingRegionCount,
     enabledConnectionCount: enabledConnections.length,
     assignedActiveLocationCount: assignedActiveLocationIds.size,
     isConfigured:
       activeLocationIds.size > 0 &&
+      activeLocationsMissingRegionCount === 0 &&
       enabledConnections.length > 0 &&
       assignedActiveLocationIds.size > 0,
     hasValidatedConnection: enabledConnections.some(
@@ -663,7 +679,7 @@ export async function getProductionTenantContext(
       .single(),
     auth.supabase
       .from("locations")
-      .select("id, organization_id, location_key, brand_name, display_name, timezone, status, presentation")
+      .select("id, organization_id, location_key, brand_name, display_name, timezone, region, status, presentation")
       .eq("organization_id", organizationId)
       .order("display_name"),
     connectionQuery,

@@ -45,14 +45,15 @@ import {
 } from "@/lib/admin-navigation";
 import type { ProductionAdminSettingsWorkspace } from "@/lib/production-admin-settings";
 import { getBusinessUnitMappingReadiness } from "@/lib/business-unit-mapping-readiness";
-import {
-  type OrganizationDivision,
-  type ProductionTenantContext,
-  type ServiceTitanAssignment,
-  type ServiceTitanBusinessUnit,
-  type ServiceTitanBusinessUnitMapping,
-  type ServiceTitanConnection,
-  type TenantLocation,
+import { OPERATING_REGIONS, type OperatingRegion } from "@/lib/operating-regions";
+import type {
+  OrganizationDivision,
+  ProductionTenantContext,
+  ServiceTitanAssignment,
+  ServiceTitanBusinessUnit,
+  ServiceTitanBusinessUnitMapping,
+  ServiceTitanConnection,
+  TenantLocation,
 } from "@/lib/tenant-context";
 
 const INITIAL_ADMIN_ACTION_STATE: AdminActionState = { status: "idle", message: "" };
@@ -132,6 +133,79 @@ function TimezoneSelect({ defaultValue = "America/Chicago", ...props }: SelectHT
       ))}
     </select>
   );
+}
+
+const REGION_LABELS: Record<OperatingRegion, string> = {
+  west: "West",
+  midwest: "Midwest",
+  northwest: "Northwest",
+  southwest: "Southwest",
+};
+
+function RegionSelect({ defaultValue = "", ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select name="region" required defaultValue={defaultValue} {...props}>
+      <option value="" disabled>Select a region</option>
+      {OPERATING_REGIONS.map((region) => <option key={region} value={region}>{REGION_LABELS[region]}</option>)}
+    </select>
+  );
+}
+
+function DisclosureButton({
+  open,
+  onClick,
+  openLabel = "Close",
+  closedLabel,
+  controls,
+}: {
+  open: boolean;
+  onClick: () => void;
+  openLabel?: string;
+  closedLabel: string;
+  controls: string;
+}) {
+  return (
+    <button type="button" className="production-secondary-button" aria-expanded={open} aria-controls={controls} onClick={onClick}>
+      {open ? openLabel : closedLabel}
+    </button>
+  );
+}
+
+function SetupDisclosure({
+  step,
+  title,
+  description,
+  complete,
+  status,
+  children,
+}: {
+  step: string;
+  title: string;
+  description: string;
+  complete: boolean;
+  status: string;
+  children: ReactNode;
+}) {
+  const [manualDisclosure, setManualDisclosure] = useState<{ complete: boolean; open: boolean } | null>(null);
+  const open = manualDisclosure?.complete === complete ? manualDisclosure.open : !complete;
+  const bodyId = `setup-step-${useId().replaceAll(":", "")}`;
+  return (
+    <section className={`production-config-step${complete ? " is-complete" : " is-required"}`}>
+      <div className="production-config-step-heading">
+        <span aria-hidden="true">{step}</span>
+        <div><h3>{title}</h3><p>{description}</p></div>
+        <b className={`production-status ${complete ? "ready" : "needs_attention"}`}>{status}</b>
+        <DisclosureButton open={open} onClick={() => setManualDisclosure({ complete, open: !open })} closedLabel={complete ? "Edit" : "Continue"} openLabel="Collapse" controls={bodyId} />
+      </div>
+      {open ? <div id={bodyId} className="production-config-step-body">{children}</div> : null}
+    </section>
+  );
+}
+
+function useServerActionDisclosure(state: AdminActionState, initiallyOpen = false): [boolean, (open: boolean) => void] {
+  const [openedFrom, setOpenedFrom] = useState<AdminActionState | null>(() => initiallyOpen ? state : null);
+  const open = openedFrom !== null && (state.status !== "success" || openedFrom === state);
+  return [open, (nextOpen) => setOpenedFrom(nextOpen ? state : null)];
 }
 
 function SubmitButton({
@@ -256,13 +330,22 @@ function FormField({
 
 function OrganizationEditor({ tenant }: { tenant: ProductionTenantContext }) {
   const [state, action] = useActionState(updateOrganizationAction, INITIAL_ADMIN_ACTION_STATE);
+  const [editing, setEditing] = useServerActionDisclosure(state);
+  const formId = "organization-details-form";
   return (
     <section className="production-panel" aria-labelledby="organization-details-title">
       <div className="production-panel-heading">
         <div><span>Organization details</span><h2 id="organization-details-title">Name and workspace URL</h2></div>
         <span className={`production-status ${tenant.organization.status}`}>{formatStatus(tenant.organization.status)}</span>
+        <DisclosureButton open={editing} onClick={() => setEditing(!editing)} closedLabel="Edit" openLabel="Cancel" controls={formId} />
       </div>
-      <form action={action} className="production-form-grid" noValidate>
+      {!editing ? (
+        <div className="production-saved-summary">
+          <div><span>Organization</span><strong>{tenant.organization.name}</strong></div>
+          <div><span>Workspace URL</span><strong>{tenant.organization.slug}</strong></div>
+        </div>
+      ) : (
+      <form id={formId} action={action} className="production-form-grid" noValidate>
         <FormField name="name" label="Organization name" state={state} prefix="organization">
           {(props) => <input {...props} name="name" required maxLength={160} defaultValue={tenant.organization.name} />}
         </FormField>
@@ -274,13 +357,15 @@ function OrganizationEditor({ tenant }: { tenant: ProductionTenantContext }) {
           <SubmitButton pendingLabel="Saving organization…">Save organization</SubmitButton>
         </div>
       </form>
+      )}
       <ActionNotice state={state} />
     </section>
   );
 }
 
-function CreateLocationForm() {
+function CreateLocationForm({ onCancel }: { onCancel: () => void }) {
   const [state, action] = useActionState(createLocationAction, INITIAL_ADMIN_ACTION_STATE);
+  useEffect(() => { if (state.status === "success") onCancel(); }, [state.status, onCancel]);
   return (
     <section className="production-panel" aria-labelledby="add-location-title">
       <div className="production-panel-heading"><div><span>New operating location</span><h2 id="add-location-title">Add a location</h2></div></div>
@@ -297,9 +382,15 @@ function CreateLocationForm() {
         <FormField name="timezone" label="Time zone" state={state} prefix="new-location">
           {(props) => <TimezoneSelect {...props} />}
         </FormField>
+        <FormField name="region" label="Region" state={state} prefix="new-location" help="Used for executive reporting across multiple operating locations.">
+          {(props) => <RegionSelect {...props} />}
+        </FormField>
         <div className="production-form-footer">
           <span>Locations can be assigned to ServiceTitan after they are added.</span>
-          <SubmitButton pendingLabel="Adding location…">Add location</SubmitButton>
+          <div className="production-inline-actions">
+            <button type="button" className="production-secondary-button" onClick={onCancel}>Cancel</button>
+            <SubmitButton pendingLabel="Adding location…">Add location</SubmitButton>
+          </div>
         </div>
       </form>
       <ActionNotice state={state} />
@@ -310,7 +401,9 @@ function CreateLocationForm() {
 function LocationEditor({ location }: { location: TenantLocation }) {
   const [updateState, updateAction] = useActionState(updateLocationAction, INITIAL_ADMIN_ACTION_STATE);
   const [archiveState, archiveAction] = useActionState(archiveLocationAction, INITIAL_ADMIN_ACTION_STATE);
+  const [editing, setEditing] = useServerActionDisclosure(updateState, location.region === null);
   const prefix = `location-${location.id}`;
+  const formId = `${prefix}-form`;
 
   if (location.status === "archived") {
     return (
@@ -324,10 +417,13 @@ function LocationEditor({ location }: { location: TenantLocation }) {
   return (
     <article className="production-record production-location-editor">
       <div className="production-record-heading">
-        <div><strong>{location.display_name}</strong><span>{location.brand_name} · {formatStatus(location.status)}</span></div>
-        <span className={`production-status ${location.status}`}>{formatStatus(location.status)}</span>
+        <div><strong>{location.display_name}</strong><span>{location.brand_name} · {location.location_key} · {location.region ? REGION_LABELS[location.region] : "Region required"}</span></div>
+        <span className={`production-status ${location.region ? location.status : "needs_attention"}`}>{location.region ? formatStatus(location.status) : "Region required"}</span>
+        <DisclosureButton open={editing} onClick={() => setEditing(!editing)} closedLabel="Edit" openLabel="Cancel" controls={formId} />
       </div>
-      <form action={updateAction} className="production-form-grid compact" noValidate>
+      {editing ? (
+      <>
+      <form id={formId} action={updateAction} className="production-form-grid compact" noValidate>
         <input type="hidden" name="locationId" value={location.id} />
         <FormField name="locationKey" label="Location key" state={updateState} prefix={prefix}>
           {(props) => <input {...props} name="locationKey" required defaultValue={location.location_key} />}
@@ -340,6 +436,9 @@ function LocationEditor({ location }: { location: TenantLocation }) {
         </FormField>
         <FormField name="timezone" label="Time zone" state={updateState} prefix={prefix}>
           {(props) => <TimezoneSelect {...props} defaultValue={location.timezone} />}
+        </FormField>
+        <FormField name="region" label="Region" state={updateState} prefix={prefix} help="Required for region-level executive reporting.">
+          {(props) => <RegionSelect {...props} defaultValue={location.region ?? ""} />}
         </FormField>
         <div className="production-form-footer"><span>Last saved values remain active until this form succeeds.</span><SubmitButton pendingLabel="Saving location…">Save changes</SubmitButton></div>
       </form>
@@ -356,12 +455,36 @@ function LocationEditor({ location }: { location: TenantLocation }) {
         >Archive location</ConfirmAction>
       </form>
       <ActionNotice state={archiveState} />
+      </>
+      ) : null}
     </article>
   );
 }
 
-function CreateConnectionForm({ locations }: { locations: TenantLocation[] }) {
+function LocationsManager({ locations }: { locations: TenantLocation[] }) {
+  const [adding, setAdding] = useState(false);
+  const closeAddLocation = useCallback(() => setAdding(false), []);
+  return (
+    <section className="production-section" aria-labelledby="locations-list-title">
+      <div className="production-section-title production-section-title-actions">
+        <div><span>All locations</span><h2 id="locations-list-title">Operating locations</h2></div>
+        <div className="production-inline-actions">
+          <strong aria-label={`${locations.length} location records`}>{locations.length}</strong>
+          <DisclosureButton open={adding} onClick={() => setAdding((value) => !value)} closedLabel="Add Location" openLabel="Cancel" controls="add-location-panel" />
+        </div>
+      </div>
+      <p className="production-section-intro">Locations stay compact after setup. Edit a record only when its operating details or region change.</p>
+      <div id="add-location-panel">{adding ? <CreateLocationForm onCancel={closeAddLocation} /> : null}</div>
+      <div className="production-record-list">
+        {locations.length ? locations.map((location) => <LocationEditor key={location.id} location={location} />) : <div className="production-empty">No locations have been added. Choose Add Location to create the first one.</div>}
+      </div>
+    </section>
+  );
+}
+
+function CreateConnectionForm({ locations, onCancel }: { locations: TenantLocation[]; onCancel: () => void }) {
   const [state, action] = useActionState(createConnectionAction, INITIAL_ADMIN_ACTION_STATE);
+  useEffect(() => { if (state.status === "success") onCancel(); }, [state.status, onCancel]);
   const activeLocations = locations.filter((location) => location.status === "active");
   return (
     <section className="production-panel production-connection-create" aria-labelledby="add-connection-title">
@@ -390,11 +513,33 @@ function CreateConnectionForm({ locations }: { locations: TenantLocation[] }) {
           {(props) => <input {...props} name="appKey" type="password" required maxLength={4096} autoComplete="new-password" spellCheck={false} />}
         </FormField>
         <div className="production-form-footer">
-          <span>After this is saved, an authorized operator must validate read-only access.</span>
-          <SubmitButton pendingLabel="Encrypting and adding connection…">Add secure connection</SubmitButton>
+          <span>After this is saved, an authorized administrator can validate read-only access.</span>
+          <div className="production-inline-actions">
+            <button type="button" className="production-secondary-button" onClick={onCancel}>Cancel</button>
+            <SubmitButton pendingLabel="Encrypting and adding connection…">Add secure connection</SubmitButton>
+          </div>
         </div>
       </form>
       <ActionNotice state={state} />
+    </section>
+  );
+}
+
+function SecureConnectionManager({ tenant }: { tenant: ProductionTenantContext }) {
+  const [adding, setAdding] = useState(false);
+  const closeAddConnection = useCallback(() => setAdding(false), []);
+  const enabledCount = tenant.connections.filter((connection) => connection.status !== "disabled" && connection.status !== "archived").length;
+  return (
+    <section className="production-section production-compact-setup" aria-labelledby="secure-connection-title">
+      <div className="production-section-title production-section-title-actions">
+        <div><span>Step 1</span><h2 id="secure-connection-title">Secure ServiceTitan connections</h2></div>
+        <div className="production-inline-actions">
+          <span className={`production-status ${enabledCount ? "ready" : "needs_attention"}`}>{enabledCount ? `${enabledCount} connected` : "Not connected"}</span>
+          <DisclosureButton open={adding} onClick={() => setAdding((value) => !value)} closedLabel="Add secure connection" openLabel="Cancel" controls="add-connection-panel" />
+        </div>
+      </div>
+      <p className="production-section-intro">Credentials stay hidden until you intentionally add another encrypted connection.</p>
+      <div id="add-connection-panel">{adding ? <CreateConnectionForm locations={tenant.locations} onCancel={closeAddConnection} /> : null}</div>
     </section>
   );
 }
@@ -443,16 +588,21 @@ function ConnectionCredentialRotationForm({ connection }: { connection: ServiceT
 
 function ConnectionRecord({ connection, assignments, locations }: { connection: ServiceTitanConnection; assignments: ServiceTitanAssignment[]; locations: TenantLocation[] }) {
   const [state, action] = useActionState(disableConnectionAction, INITIAL_ADMIN_ACTION_STATE);
+  const [managing, setManaging] = useState(false);
   const assignmentNames = activeAssignmentNames(connection, assignments, locations);
   const canDisable = connection.status !== "disabled" && connection.status !== "archived";
   const validated = connection.status === "ready" && Boolean(connection.last_validated_at);
   return (
     <article className={`production-record production-connection-record ${canDisable ? "" : "is-archived"}`}>
       <div className="production-record-heading">
-        <div><strong>{connection.display_name}</strong><span>ServiceTitan tenant {connection.service_titan_tenant_id} · {formatStatus(connection.environment)}</span></div>
+        <div><strong>{connection.display_name}</strong><span>ServiceTitan tenant {connection.service_titan_tenant_id} · {assignmentNames.length} location{assignmentNames.length === 1 ? "" : "s"}</span></div>
         <span className={`production-status ${connection.status}`}>{formatStatus(connection.status)}</span>
+        <DisclosureButton open={managing} onClick={() => setManaging((value) => !value)} closedLabel={canDisable ? "Manage" : "View"} openLabel="Collapse" controls={`connection-${connection.id}-details`} />
       </div>
+      {managing ? (
+      <div id={`connection-${connection.id}-details`}>
       <dl className="production-facts">
+        <div><dt>Environment</dt><dd>{formatStatus(connection.environment)}</dd></div>
         <div><dt>Credential storage</dt><dd>Encrypted</dd></div>
         <div><dt>Assigned locations</dt><dd>{assignmentNames.length ? assignmentNames.join(", ") : "None"}</dd></div>
         <div><dt>Access validation</dt><dd>{validated && connection.last_validated_at ? `Validated ${new Date(connection.last_validated_at).toLocaleString()}` : "Not validated"}</dd></div>
@@ -474,6 +624,8 @@ function ConnectionRecord({ connection, assignments, locations }: { connection: 
         </>
       ) : null}
       <ActionNotice state={state} />
+      </div>
+      ) : null}
     </article>
   );
 }
@@ -571,7 +723,9 @@ function DivisionEditor({
   const [renameState, renameAction] = useActionState(renameDivisionAction, INITIAL_ADMIN_ACTION_STATE);
   const [statusState, statusAction] = useActionState(setDivisionStatusAction, INITIAL_ADMIN_ACTION_STATE);
   const [moveState, moveAction] = useActionState(moveDivisionAction, INITIAL_ADMIN_ACTION_STATE);
+  const [editing, setEditing] = useServerActionDisclosure(renameState);
   const prefix = `division-${division.id}`;
+  const formId = `${prefix}-form`;
 
   if (division.status === "archived") {
     return (
@@ -599,8 +753,11 @@ function DivisionEditor({
       <div className="production-record-heading">
         <div><strong>{division.name}</strong><span>Active division · display position {division.sort_order}</span></div>
         <span className="production-status active">Active</span>
+        <DisclosureButton open={editing} onClick={() => setEditing(!editing)} closedLabel="Edit" openLabel="Cancel" controls={formId} />
       </div>
-      <form action={renameAction} className="production-form-grid compact" noValidate>
+      {editing ? (
+      <>
+      <form id={formId} action={renameAction} className="production-form-grid compact" noValidate>
         <input type="hidden" name="divisionId" value={division.id} />
         <FormField name="name" label="Division name" state={renameState} prefix={prefix} help="Renaming preserves this division’s stable identity and historical reporting.">
           {(props) => <input {...props} name="name" required maxLength={80} defaultValue={division.name} />}
@@ -638,12 +795,16 @@ function DivisionEditor({
         >Archive division</ConfirmAction>
       </form>
       <ActionNotice state={statusState} />
+      </>
+      ) : null}
     </article>
   );
 }
 
 function DivisionManager({ tenant }: { tenant: ProductionTenantContext }) {
   const [state, action] = useActionState(createDivisionAction, INITIAL_ADMIN_ACTION_STATE);
+  const initialActiveDivisionCount = tenant.adminConfiguration?.divisions.filter((division) => division.status === "active").length ?? 0;
+  const [adding, setAdding] = useServerActionDisclosure(state, initialActiveDivisionCount === 0);
   const admin = tenant.adminConfiguration;
   if (!admin) return <div className="production-empty">Division configuration could not be loaded.</div>;
   const divisions = [...admin.divisions].sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
@@ -651,11 +812,16 @@ function DivisionManager({ tenant }: { tenant: ProductionTenantContext }) {
 
   return (
     <section className="production-section production-division-manager" aria-labelledby="division-manager-title">
-      <div className="production-section-title">
-        <div><span>Step 5</span><h2 id="division-manager-title">Create your divisions</h2></div>
-        <strong aria-label={`${activeDivisions.length} active divisions`}>{activeDivisions.length}</strong>
+      <div className="production-section-title production-section-title-actions">
+        <div><span>Step 5</span><h2 id="division-manager-title">Operating divisions</h2></div>
+        <div className="production-inline-actions">
+          <span className={`production-status ${activeDivisions.length ? "ready" : "needs_attention"}`}>{activeDivisions.length ? `${activeDivisions.length} active` : "Required"}</span>
+          <DisclosureButton open={adding} onClick={() => setAdding(!adding)} closedLabel="Add division" openLabel="Collapse" controls="division-create" />
+        </div>
       </div>
-      <p className="production-section-intro">Divisions are organization-wide labels used to group discovered ServiceTitan business units. Create at least one active division before mapping.</p>
+      <p className="production-section-intro">Divisions are organization-wide labels used to group discovered ServiceTitan business units. Active divisions stay summarized until you choose Edit.</p>
+      {adding ? (
+      <div id="division-create">
       <p className="production-boundary-note"><strong>“Not Mapped” is never a division.</strong> It means a business unit currently has no saved mapping. Archived divisions preserve history but are unavailable in new mapping selections until restored.</p>
       <form action={action} className="production-form-grid production-division-create" noValidate>
         <FormField name="name" label="New division name" state={state} prefix="new-division" help="Use 1 to 80 printable characters. Division names must be unique.">
@@ -667,6 +833,8 @@ function DivisionManager({ tenant }: { tenant: ProductionTenantContext }) {
         </div>
       </form>
       <ActionNotice state={state} />
+      </div>
+      ) : null}
       <div className="production-record-list" aria-label="Organization divisions">
         {divisions.length ? divisions.map((division) => {
           const activeIndex = activeDivisions.findIndex((item) => item.id === division.id);
@@ -699,13 +867,9 @@ function ServiceTitanConnectionConfiguration({ tenant, connection }: { tenant: P
 
   return (
     <section className="production-connection-config" aria-label={`${connection.display_name} location and business unit setup`}>
-      <form action={validationAction} className="production-config-step">
+      <SetupDisclosure step="2" title="Validate ServiceTitan access" description="Securely verify OAuth credentials and read-only business-unit access." complete={canDiscover} status={canDiscover ? "Complete" : "Required"}>
+      <form action={validationAction}>
         <input type="hidden" name="connectionId" value={connection.id} />
-        <div className="production-config-step-heading">
-          <span aria-hidden="true">2</span>
-          <div><h3>Validate ServiceTitan access</h3><p>Securely verify OAuth credentials and read-only business-unit access.</p></div>
-          <b>{canDiscover ? "Ready" : "Required"}</b>
-        </div>
         <div className="production-action-row">
           <span>{connection.last_validated_at ? `Last validated ${new Date(connection.last_validated_at).toLocaleString()}` : "Credentials have not been validated."}</span>
           <SubmitButton pendingLabel="Validating ServiceTitan…">{canDiscover ? "Revalidate connection" : "Validate connection"}</SubmitButton>
@@ -713,15 +877,12 @@ function ServiceTitanConnectionConfiguration({ tenant, connection }: { tenant: P
         <p className="production-inline-guidance">Validation runs securely on the server. Credentials and provider responses are never returned to the browser.</p>
         <ActionNotice state={validationState} />
       </form>
+      </SetupDisclosure>
 
-      <form action={assignmentAction} className="production-config-step">
+      <SetupDisclosure step="3" title="Assign operating locations" description="Choose every location that uses this ServiceTitan tenant." complete={activeAssignments.size > 0} status={activeAssignments.size ? `${activeAssignments.size} assigned` : "Required"}>
+      <form action={assignmentAction}>
         <input type="hidden" name="connectionId" value={connection.id} />
         <input type="hidden" name="confirmReplacement" value="yes" />
-        <div className="production-config-step-heading">
-          <span aria-hidden="true">3</span>
-          <div><h3>Assign operating locations</h3><p>Choose every location that uses this ServiceTitan tenant.</p></div>
-          <b>{activeAssignments.size} assigned</b>
-        </div>
         <fieldset className="production-choice-list">
           <legend className="sr-only">Locations assigned to {connection.display_name}</legend>
           {activeLocations.length ? activeLocations.map((location) => (
@@ -743,14 +904,11 @@ function ServiceTitanConnectionConfiguration({ tenant, connection }: { tenant: P
         </div>
         <ActionNotice state={assignmentState} />
       </form>
+      </SetupDisclosure>
 
-      <form action={discoveryAction} className="production-config-step">
+      <SetupDisclosure step="4" title="Discover business units" description="Run a secure read-only request and save the current ServiceTitan business-unit list." complete={latestRun?.status === "completed"} status={latestRun?.status === "completed" ? "Complete" : latestRun ? formatStatus(latestRun.status) : "Required"}>
+      <form action={discoveryAction}>
         <input type="hidden" name="connectionId" value={connection.id} />
-        <div className="production-config-step-heading">
-          <span aria-hidden="true">4</span>
-          <div><h3>Discover business units</h3><p>Run a secure read-only request and save the current ServiceTitan business-unit list.</p></div>
-          <b>{latestRun ? formatStatus(latestRun.status) : "Not requested"}</b>
-        </div>
         <div className="production-action-row">
           <span>{latestRun ? `Latest discovery: ${formatStatus(latestRun.status)}${latestRun.completed_at ? ` · ${new Date(latestRun.completed_at).toLocaleString()}` : ""}` : "Business-unit discovery has not been run."}</span>
           <SubmitButton pendingLabel="Discovering business units…" disabled={!canDiscover}>{canDiscover ? (latestRun ? "Run discovery again" : "Discover business units") : "Validation required"}</SubmitButton>
@@ -758,6 +916,7 @@ function ServiceTitanConnectionConfiguration({ tenant, connection }: { tenant: P
         {!canDiscover ? <p className="production-inline-guidance">Validate this connection first. Discovery becomes available immediately after successful validation.</p> : null}
         <ActionNotice state={discoveryState} />
       </form>
+      </SetupDisclosure>
 
     </section>
   );
@@ -1001,23 +1160,16 @@ function ServiceTitanMappingConfiguration({ tenant, connection }: { tenant: Prod
 
   return (
     <section className="production-connection-config" aria-label={`${connection.display_name} business-unit mapping`}>
+      <SetupDisclosure step="6" title={`Map ${connection.display_name} business units`} description="Connect each active unit to an assigned location and active division." complete={readiness.complete} status={statusLabel}>
       <form
         action={mappingAction}
-        className={`production-config-step ${!divisionsAvailable ? "is-unavailable" : ""}`}
+        className={!divisionsAvailable ? "is-unavailable" : undefined}
         aria-disabled={!divisionsAvailable || undefined}
         aria-describedby={!divisionsAvailable ? guidanceId : undefined}
       >
         <input type="hidden" name="connectionId" value={connection.id} />
         <input type="hidden" name="discoveryRevision" value={revision ?? ""} />
         <input type="hidden" name="confirmMappings" value="yes" />
-        <div className="production-config-step-heading">
-          <span aria-hidden="true">6</span>
-          <div>
-            <h3>Map {connection.display_name} business units</h3>
-            <p>Connect each active business unit from the latest successful discovery to an assigned location and active division.</p>
-          </div>
-          <b>{statusLabel}</b>
-        </div>
         {!divisionsAvailable ? (
           <div id={guidanceId} className="production-empty compact" role="status">
             Mapping is unavailable because this organization has no active divisions. Create or restore a division in step 5; archived divisions preserve history and cannot be selected. “Not Mapped” represents no saved mapping and is never a division.
@@ -1077,6 +1229,7 @@ function ServiceTitanMappingConfiguration({ tenant, connection }: { tenant: Prod
         )}
         <ActionNotice state={mappingState} />
       </form>
+      </SetupDisclosure>
     </section>
   );
 }
@@ -1198,6 +1351,7 @@ function SetupOverview({ tenant, navigate }: { tenant: ProductionTenantContext; 
     mappingReadiness.every((readiness) => readiness.complete);
   const milestones = getAdminSetupMilestones({
     activeLocationCount: tenant.readiness.activeLocationCount,
+    activeLocationsMissingRegionCount: tenant.readiness.activeLocationsMissingRegionCount,
     enabledConnectionCount: tenant.readiness.enabledConnectionCount,
     hasValidatedConnection: tenant.readiness.hasValidatedConnection,
     assignedActiveLocationCount: tenant.readiness.assignedActiveLocationCount,
@@ -1206,8 +1360,15 @@ function SetupOverview({ tenant, navigate }: { tenant: ProductionTenantContext; 
     mappedBusinessUnitCount,
   }).map((milestone) => milestone.id === "mappings" ? { ...milestone, complete: exactMappingComplete } : milestone);
   const completeCount = milestones.filter((milestone) => milestone.complete).length;
+  const missingRegionCount = tenant.readiness.activeLocationsMissingRegionCount;
+  const activeLocationCount = tenant.readiness.activeLocationCount;
+  const locationSetupDetail = missingRegionCount > 0
+    ? `${missingRegionCount} active location${missingRegionCount === 1 ? "" : "s"} need Region classification`
+    : activeLocationCount > 0
+      ? `${activeLocationCount} active location${activeLocationCount === 1 ? "" : "s"} classified`
+      : "No active locations";
   const details = [
-    { id: "locations", title: "Add an operating location", detail: tenant.readiness.activeLocationCount ? `${tenant.readiness.activeLocationCount} active location${tenant.readiness.activeLocationCount === 1 ? "" : "s"}` : "No active locations", section: "organization" as const },
+    { id: "locations", title: "Add and classify operating locations", detail: locationSetupDetail, section: "organization" as const },
     { id: "credentials", title: "Add ServiceTitan credentials", detail: tenant.readiness.enabledConnectionCount ? `${tenant.readiness.enabledConnectionCount} enabled connection${tenant.readiness.enabledConnectionCount === 1 ? "" : "s"}` : "No enabled connections", section: "connections" as const },
     { id: "validation", title: "Validate ServiceTitan access", detail: tenant.readiness.hasValidatedConnection ? "A validated connection is ready" : "Run secure validation from ServiceTitan setup", section: "connections" as const },
     { id: "assignments", title: "Assign locations", detail: tenant.readiness.assignedActiveLocationCount ? `${tenant.readiness.assignedActiveLocationCount} assigned active location${tenant.readiness.assignedActiveLocationCount === 1 ? "" : "s"}` : "No active locations assigned", section: "connections" as const },
@@ -1333,20 +1494,14 @@ export function ProductionAdminConsole({
             {section === "organization" ? (
               <>
                 <OrganizationEditor tenant={tenant} />
-                <CreateLocationForm />
-                <section className="production-section" aria-labelledby="locations-list-title">
-                  <div className="production-section-title"><div><span>All locations</span><h2 id="locations-list-title">Location records</h2></div><strong>{tenant.locations.length}</strong></div>
-                  <div className="production-record-list">
-                    {tenant.locations.length ? tenant.locations.map((location) => <LocationEditor key={location.id} location={location} />) : <div className="production-empty">No locations have been added for this organization.</div>}
-                  </div>
-                </section>
+                <LocationsManager locations={tenant.locations} />
               </>
             ) : null}
 
             {section === "connections" ? (
               <>
                 <ServiceTitanProcess tenant={tenant} />
-                <CreateConnectionForm locations={tenant.locations} />
+                <SecureConnectionManager tenant={tenant} />
                 <section className="production-section production-connections-list" aria-labelledby="connections-list-title">
                   <div className="production-section-title"><div><span>Connection records · steps 2–4</span><h2 id="connections-list-title">Manage existing connections</h2></div><strong>{tenant.connections.length}</strong></div>
                   <div className="production-record-list">
