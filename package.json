@@ -12,14 +12,16 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:servicetitan-worker": "node --test scripts/servicetitan-report-worker.node-test.mjs scripts/servicetitan-business-unit-discovery.node-test.mjs scripts/servicetitan-validation.node-test.mjs scripts/approve-servicetitan-saved-report.node-test.mjs",
-    "check:operator-scripts": "node --check scripts/bootstrap-tenant.mjs && node --check scripts/remove-qa-tenant.mjs && node --check scripts/validate-servicetitan-connection.mjs && node --check scripts/ingest-servicetitan-report.mjs && node --check scripts/approve-servicetitan-saved-report.mjs && node --check scripts/discover-servicetitan-business-units.mjs && node --check scripts/lib/servicetitan-report.mjs && node --check scripts/lib/servicetitan-business-unit-discovery.mjs && node --check scripts/lib/servicetitan-validation.mjs",
+    "test:servicetitan-worker": "node --test scripts/servicetitan-report-worker.node-test.mjs scripts/servicetitan-business-unit-discovery.node-test.mjs scripts/servicetitan-validation.node-test.mjs scripts/approve-servicetitan-saved-report.node-test.mjs scripts/servicetitan-endpoint-ingestion.node-test.mjs scripts/domo-dataset.node-test.mjs",
+    "check:operator-scripts": "node --check scripts/bootstrap-tenant.mjs && node --check scripts/remove-qa-tenant.mjs && node --check scripts/validate-servicetitan-connection.mjs && node --check scripts/ingest-servicetitan-report.mjs && node --check scripts/approve-servicetitan-saved-report.mjs && node --check scripts/discover-servicetitan-business-units.mjs && node --check scripts/approve-data-source-binding.mjs && node --check scripts/run-data-source-ingestion.mjs && node --check scripts/lib/servicetitan-report.mjs && node --check scripts/lib/servicetitan-business-unit-discovery.mjs && node --check scripts/lib/servicetitan-validation.mjs && node --check scripts/lib/servicetitan-endpoint-ingestion.mjs && node --check scripts/lib/domo-dataset.mjs",
     "tenant:bootstrap": "node scripts/bootstrap-tenant.mjs",
     "tenant:remove-qa": "node scripts/remove-qa-tenant.mjs",
     "servicetitan:validate": "node scripts/validate-servicetitan-connection.mjs",
     "servicetitan:ingest-report": "node scripts/ingest-servicetitan-report.mjs",
     "servicetitan:approve-report": "node scripts/approve-servicetitan-saved-report.mjs",
-    "servicetitan:discover-business-units": "node scripts/discover-servicetitan-business-units.mjs"
+    "servicetitan:discover-business-units": "node scripts/discover-servicetitan-business-units.mjs",
+    "data-source:approve": "node scripts/approve-data-source-binding.mjs",
+    "data-source:ingest": "node scripts/run-data-source-ingestion.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.7.0",

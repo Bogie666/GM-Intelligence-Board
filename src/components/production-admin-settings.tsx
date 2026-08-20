@@ -17,13 +17,14 @@ import {
   type ProductionKpiTarget,
 } from "@/lib/production-admin-settings";
 import { serviceTitanEndpointRecipes } from "@/lib/service-titan-sources";
+import { ProductionAdditionalDataSources } from "@/components/production-additional-data-sources";
 
 
 const INITIAL: AdminActionState = { status: "idle", message: "" };
 
-function Submit({ children }: { children: React.ReactNode }) {
+function Submit({ children, disabled = false }: { children: React.ReactNode; disabled?: boolean }) {
   const { pending } = useFormStatus();
-  return <button className="button primary" type="submit" disabled={pending}>{pending ? "Saving…" : children}</button>;
+  return <button className="button primary" type="submit" disabled={pending || disabled}>{pending ? "Saving…" : children}</button>;
 }
 
 function Notice({ state }: { state: AdminActionState }) {
@@ -49,6 +50,7 @@ function WorkspaceWarnings({ workspace, area }: { workspace: ProductionAdminSett
 
 function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace }) {
   const [state, action] = useActionState(saveKpiBindingAction, INITIAL);
+  const [kpiId, setKpiId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [connectionId, setConnectionId] = useState("");
   const [reportId, setReportId] = useState("");
@@ -74,6 +76,8 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
   });
   const defaultParameters = Object.fromEntries(requiredParameters.map((name) => [name,
     /(^|\b)(to|end)/i.test(name) ? "$periodEndDate" : "$periodStartDate"]));
+  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId && binding.location_id === locationId);
+  const immutableExisting = existingBinding?.approval_status === "approved" || existingBinding?.approval_status === "archived";
 
   return (
     <section className="production-panel">
@@ -81,7 +85,7 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
       <p className="production-boundary-note">Active declared, inspected, or approved reports can be configured as draft bindings. Ingestion remains impossible until the trusted sample and reconciliation workflow atomically approves both contracts.</p>
       <form action={action} className="production-form-grid">
         <input type="hidden" name="sourceMethod" value="saved_report" />
-        <label>Published ServiceTitan KPI<select name="kpiDefinitionId" required defaultValue=""><option value="" disabled>Choose KPI</option>{workspace.kpiDefinitions.filter((definition) => definition.type === "service_titan").map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key} v{definition.version}</option>)}</select></label>
+        <label>Published ServiceTitan KPI<select name="kpiDefinitionId" required value={kpiId} onChange={(event) => setKpiId(event.target.value)}><option value="" disabled>Choose KPI</option>{workspace.kpiDefinitions.filter((definition) => definition.type === "service_titan").map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key} v{definition.version}</option>)}</select></label>
         <label>Active location<select name="locationId" required value={locationId} onChange={(event) => { setLocationId(event.target.value); setConnectionId(""); setReportId(""); }}><option value="" disabled>Choose location</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
         <label>Validated assigned connection<select name="connectionId" required value={connectionId} onChange={(event) => { setConnectionId(event.target.value); setReportId(""); }} disabled={!locationId}><option value="">{locationId ? "Choose connection" : "Choose a location first"}</option>{availableConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.display_name} · {connection.service_titan_tenant_id}</option>)}</select></label>
         <label>Active saved report<select name="reportSourceId" required value={reportId} onChange={(event) => setReportId(event.target.value)} disabled={!connectionId}><option value="">{connectionId ? "Choose report" : "Choose a connection first"}</option>{eligibleReports.map((report) => <option key={report.id} value={report.id}>{report.name} · {report.lifecycle}</option>)}</select></label>
@@ -92,7 +96,11 @@ function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantCont
         <label className="span-two">Required report parameters (JSON object)<textarea key={reportId} name="parameterValues" rows={3} defaultValue={JSON.stringify(defaultParameters, null, 2)} spellCheck={false} aria-describedby="binding-parameter-help" /></label>
         <p id="binding-parameter-help" className="production-inline-guidance span-two">Required names are populated from the declared report contract. Period placeholders are resolved by the worker at governance and ingestion time.</p>
         <input type="hidden" name="businessUnitMappings" value="{}" />
-        <div className="production-form-footer"><span>Saving creates a draft exact-location binding. A governed evidence review is required before ingestion.</span><Submit>Save draft binding</Submit></div>
+        {existingBinding ? immutableExisting
+          ? <div className="production-notice error span-two" role="alert">The existing {existingBinding.approval_status} binding is immutable. Choose another KPI or location; it cannot be replaced with a draft.</div>
+          : <label className="production-checkbox-row span-two"><input type="checkbox" name="confirmReplacement" value="replace" required /><span><strong>Replace existing {existingBinding.approval_status} binding</strong><small>This replaces binding {existingBinding.id} for the same KPI and location with a new draft.</small></span></label>
+          : null}
+        <div className="production-form-footer"><span>Saving creates a draft exact-location binding. A governed evidence review is required before ingestion.</span><Submit disabled={immutableExisting}>Save draft binding</Submit></div>
       </form>
       <Notice state={state} />
     </section>
@@ -132,19 +140,23 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
   });
   const definitionName = new Map(workspace.kpiDefinitions.map((definition) => [definition.id, definition.title]));
   const locationName = new Map(tenant.locations.map((location) => [location.id, location.display_name]));
+  const dataSourceAreas = new Set(["Endpoint recipes", "Saved report sources", "Custom endpoint sources", "Domo connections", "Domo dataset sources", "Published KPI definitions", "KPI bindings"]);
+  const dataSourceControlsUnavailable = workspace.warnings.some((warning) => dataSourceAreas.has(warning.area));
 
   return (
     <>
-      <WorkspaceWarnings workspace={workspace} area={["Endpoint recipes", "Saved report sources", "Published KPI definitions", "KPI bindings"]} />
+      <WorkspaceWarnings workspace={workspace} area={["Endpoint recipes", "Saved report sources", "Custom endpoint sources", "Domo connections", "Domo dataset sources", "Published KPI definitions", "KPI bindings"]} />
       <section className="production-section">
         <div className="production-section-title"><div><span>Migration-approved contracts</span><h2>Endpoint recipes</h2></div><strong>{recipeGroups.size}</strong></div>
-        <p className="production-muted-copy">Recipes are application-owned and can only be added or versioned by a reviewed migration. They remain visible as the governed catalog for the dedicated endpoint-worker rollout; this release intentionally creates new bindings only from saved reports because no endpoint ingestion worker is deployed.</p>
+        <p className="production-muted-copy">Recipes are application-owned and can only be added or versioned by a reviewed migration. They remain visible as the governed catalog and are eligible for exact-location draft bindings only at a migration-approved refresh cadence.</p>
         <div className="production-record-list">{[...recipeGroups.entries()].map(([key, policies]) => {
           const catalog = serviceTitanEndpointRecipes.find((recipe) => recipe.id === policies[0].endpoint_recipe_id && recipe.version === policies[0].endpoint_recipe_version);
           return <article className="production-record" key={key}><div className="production-record-heading"><div><strong>{catalog?.name ?? policies[0].endpoint_recipe_id}</strong><span>{policies[0].endpoint_recipe_id} · version {policies[0].endpoint_recipe_version}</span></div><span className="production-status ready">approved</span></div><p>{catalog?.description ?? "Migration-owned ServiceTitan recipe contract."}</p><small>Allowed cadence: {policies.map((policy) => policy.refresh_interval).join(", ")}</small></article>;
         })}{recipeGroups.size === 0 ? <div className="production-empty">No approved recipe policy was returned.</div> : null}</div>
       </section>
-      <ReportSourceForm tenant={tenant} />
+      {dataSourceControlsUnavailable ? (
+        <section className="production-section"><div className="production-notice error" role="alert"><strong>Data-source mutations are temporarily unavailable.</strong><p>At least one governed registry failed to load. Creation, replacement, validation, archive, disable, and approval controls are hidden until the complete tenant workspace can be reloaded.</p></div></section>
+      ) : <ReportSourceForm tenant={tenant} />}
       <section className="production-section">
         <div className="production-section-title"><div><span>Tenant registry</span><h2>Saved report sources</h2></div><strong>{workspace.reportSources.length}</strong></div>
         <p className="production-muted-copy">Registration creates a governed declaration. Approval requires a live sample plus reconciliation to an independently sourced reference value; the trusted operator command records both proofs without exposing credentials to the browser.</p>
@@ -160,16 +172,19 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
           {workspace.reportSources.length === 0 ? <div className="production-empty">No saved report source has been registered for this tenant.</div> : null}
         </div>
       </section>
-      <SourceBindingForm tenant={tenant} workspace={workspace} />
+      {!dataSourceControlsUnavailable ? <><ProductionAdditionalDataSources tenant={tenant} workspace={workspace} /><SourceBindingForm tenant={tenant} workspace={workspace} /></> : null}
       <section className="production-section">
         <div className="production-section-title"><div><span>Exact-location registry</span><h2>KPI bindings</h2></div><strong>{workspace.bindings.length}</strong></div>
-        <p className="production-muted-copy">Draft saved-report bindings are intentionally non-ingestible. A trusted operator must reconcile one completed sample period before the database atomically approves both the source and binding.</p>
+        <p className="production-muted-copy">Draft bindings are intentionally non-ingestible. Saved reports and endpoint recipes expose trusted operator handoffs; custom endpoint and Domo bindings use authenticated server-side reconciliation. Configured cadence indicates scheduler eligibility, not proof that an external scheduler is deployed.</p>
         <div className="production-record-list">
           {workspace.bindings.map((binding) => (
             <article className="production-record" key={binding.id}>
               <div className="production-record-heading"><div><strong>{definitionName.get(binding.kpi_definition_id) ?? binding.kpi_definition_id}</strong><span>{locationName.get(binding.location_id) ?? binding.location_id} · {binding.source_method ?? "unconfigured"}</span></div><span className={`production-status ${binding.approval_status}`}>{binding.approval_status}</span></div>
-              <small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"}</small>
-              {binding.source_method === "saved_report" && binding.approval_status !== "approved" ? (
+              <small>{binding.endpoint_recipe_id ? `${binding.endpoint_recipe_id} v${binding.endpoint_recipe_version}` : binding.report_source_id ?? binding.custom_endpoint_source_id ?? binding.domo_dataset_source_id ?? "No source"} · {binding.refresh_interval ?? "no cadence"}</small>
+              {binding.source_method === "endpoint_recipe" && binding.approval_status !== "approved" && binding.approval_status !== "archived" ? (
+                <details className="production-operator-handoff"><summary>Trusted endpoint-recipe approval command</summary><p>Run after obtaining an independent ServiceTitan reference value for one completed period. This executes the same governed recipe contract used by ingestion.</p><code>{`npm run data-source:approve -- --organization-id ${tenant.organization.id} --binding-id ${binding.id} --actor-profile-id ${tenant.user.id} --period-start PERIOD_START_ISO --period-end PERIOD_END_ISO --reference-value REFERENCE_VALUE --tolerance TOLERANCE --confirm ${tenant.organization.id}:${binding.id}:PERIOD_START_ISO`}</code></details>
+              ) : null}
+              {binding.source_method === "saved_report" && binding.approval_status !== "approved" && binding.approval_status !== "archived" ? (
                 <details className="production-operator-handoff"><summary>Trusted approval command</summary><p>Run after obtaining an independent ServiceTitan reference value for one completed period.</p><code>{`npm run servicetitan:approve-report -- --organization-id ${tenant.organization.id} --binding-id ${binding.id} --actor-profile-id ${tenant.user.id} --period-start PERIOD_START_ISO --period-end PERIOD_END_ISO --reference-value REFERENCE_VALUE --tolerance TOLERANCE --confirm ${tenant.organization.id}:${binding.id}:PERIOD_START_ISO`}</code></details>
               ) : null}
             </article>

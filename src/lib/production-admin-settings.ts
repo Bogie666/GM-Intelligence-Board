@@ -36,6 +36,7 @@ export interface ProductionKpiDefinitionOption {
   value_kind: string;
   lifecycle: string;
   version: number;
+  external_source: Record<string, unknown> | null;
 }
 
 export interface ProductionKpiBinding {
@@ -47,12 +48,58 @@ export interface ProductionKpiBinding {
   endpoint_recipe_id: string | null;
   endpoint_recipe_version: number | null;
   report_source_id: string | null;
+  custom_endpoint_source_id: string | null;
+  domo_connection_id: string | null;
+  domo_dataset_source_id: string | null;
   refresh_interval: string | null;
   report_reduction: string | null;
   value_field: string | null;
   numerator_field: string | null;
   denominator_field: string | null;
   approval_status: string;
+  updated_at: string;
+}
+
+export interface ProductionCustomEndpointSource {
+  id: string;
+  connection_id: string;
+  service_titan_tenant_id: string;
+  name: string;
+  description: string;
+  category: string;
+  query_parameters: Record<string, unknown>;
+  reduction: string;
+  value_field: string | null;
+  business_unit_field: string | null;
+  lifecycle: string;
+  status: string;
+  inspected_at: string | null;
+  updated_at: string;
+}
+
+export interface ProductionDomoConnection {
+  id: string;
+  display_name: string;
+  status: string;
+  last_validated_at: string | null;
+  last_error_code: string | null;
+  updated_at: string;
+}
+
+export interface ProductionDomoDatasetSource {
+  id: string;
+  domo_connection_id: string;
+  dataset_id: string;
+  name: string;
+  description: string;
+  value_column: string | null;
+  reduction: string;
+  date_column: string | null;
+  filter_column: string | null;
+  filter_value: string | null;
+  lifecycle: string;
+  status: string;
+  inspected_at: string | null;
   updated_at: string;
 }
 
@@ -102,6 +149,9 @@ export interface ProductionAccessMembership {
 export interface ProductionAdminSettingsWorkspace {
   endpointRecipes: EndpointRecipePolicy[];
   reportSources: ProductionReportSource[];
+  customEndpointSources: ProductionCustomEndpointSource[];
+  domoConnections: ProductionDomoConnection[];
+  domoDatasetSources: ProductionDomoDatasetSource[];
   kpiDefinitions: ProductionKpiDefinitionOption[];
   bindings: ProductionKpiBinding[];
   targets: ProductionKpiTarget[];
@@ -130,18 +180,27 @@ export async function loadProductionAdminSettings(
   supabase: SupabaseClient,
   organizationId: string,
 ): Promise<ProductionAdminSettingsWorkspace> {
-  const [recipes, reports, definitions, bindings, targets, templates, profileLayouts, memberships] = await Promise.all([
+  const [recipes, reports, customEndpoints, domoConnections, domoDatasets, definitions, bindings, targets, templates, profileLayouts, memberships] = await Promise.all([
     supabase.from("service_titan_endpoint_recipe_refresh_policies")
       .select("endpoint_recipe_id, endpoint_recipe_version, refresh_interval")
       .order("endpoint_recipe_id").order("endpoint_recipe_version").order("refresh_interval"),
     supabase.from("service_titan_report_sources")
       .select("id, connection_id, service_titan_tenant_id, category_id, report_id, owner_display_name, name, description, fields, parameters, lifecycle, status, verification, expected_schema_fingerprint, observed_schema_fingerprint, provider_modified_at, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
+    supabase.from("service_titan_custom_endpoint_sources")
+      .select("id, connection_id, service_titan_tenant_id, name, description, category, query_parameters, reduction, value_field, business_unit_field, lifecycle, status, inspected_at, updated_at")
+      .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
+    supabase.from("domo_connections")
+      .select("id, display_name, status, last_validated_at, last_error_code, updated_at")
+      .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
+    supabase.from("domo_dataset_sources")
+      .select("id, domo_connection_id, dataset_id, name, description, value_column, reduction, date_column, filter_column, filter_value, lifecycle, status, inspected_at, updated_at")
+      .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("custom_kpi_definitions")
-      .select("id, kpi_key, title, type, value_kind, lifecycle, version")
+      .select("id, kpi_key, title, type, value_kind, lifecycle, version, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published").order("title"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, connection_id, source_method, endpoint_recipe_id, endpoint_recipe_version, report_source_id, refresh_interval, report_reduction, value_field, numerator_field, denominator_field, approval_status, updated_at")
+      .select("id, kpi_definition_id, location_id, connection_id, source_method, endpoint_recipe_id, endpoint_recipe_version, report_source_id, custom_endpoint_source_id, domo_connection_id, domo_dataset_source_id, refresh_interval, report_reduction, value_field, numerator_field, denominator_field, approval_status, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("kpi_targets")
       .select("id, location_id, kpi_definition_id, metric_key, version, target_value, warning_value, effective_from, effective_to, dimensions, lifecycle, updated_at")
@@ -161,6 +220,9 @@ export async function loadProductionAdminSettings(
   return {
     endpointRecipes: rows<EndpointRecipePolicy>(recipes, "Endpoint recipes", warnings),
     reportSources: rows<ProductionReportSource>(reports, "Saved report sources", warnings),
+    customEndpointSources: rows<ProductionCustomEndpointSource>(customEndpoints, "Custom endpoint sources", warnings),
+    domoConnections: rows<ProductionDomoConnection>(domoConnections, "Domo connections", warnings),
+    domoDatasetSources: rows<ProductionDomoDatasetSource>(domoDatasets, "Domo dataset sources", warnings),
     kpiDefinitions: rows<ProductionKpiDefinitionOption>(definitions, "Published KPI definitions", warnings),
     bindings: rows<ProductionKpiBinding>(bindings, "KPI bindings", warnings),
     targets: rows<ProductionKpiTarget>(targets, "Targets and budgets", warnings),

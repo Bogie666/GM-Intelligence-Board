@@ -41,7 +41,11 @@ declare
     'portfolios',
     'portfolio_memberships',
     'portfolio_organizations',
-    'portfolio_audit_events'
+    'portfolio_audit_events',
+    'service_titan_endpoint_ingestion_runs',
+    'service_titan_custom_endpoint_sources',
+    'domo_connections',
+    'domo_dataset_sources'
   ];
   worker_read_only_tables constant text[] := array[
     'service_titan_report_evidence',
@@ -51,7 +55,8 @@ declare
     'service_titan_business_units',
     'service_titan_business_unit_mappings',
     'service_titan_endpoint_recipe_refresh_policies',
-    'original_kpi_catalog'
+    'original_kpi_catalog',
+    'service_titan_endpoint_ingestion_runs'
   ];
   rpc_only_tables constant text[] := array[
     'schema_releases',
@@ -65,7 +70,10 @@ declare
     'service_titan_connections',
     'service_titan_connection_locations',
     'service_titan_discovery_runs',
-    'organization_divisions'
+    'organization_divisions',
+    'domo_connections',
+    'service_titan_custom_endpoint_sources',
+    'domo_dataset_sources'
   ];
   missing_tables text[];
   rls_disabled text[];
@@ -236,6 +244,42 @@ begin
     raise exception 'service_titan_discovery_runs revision-safe SELECT boundary is incorrect';
   end if;
 
+  if pg_catalog.has_table_privilege('authenticated', 'public.domo_connections', 'SELECT')
+     or pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'secret_reference', 'SELECT')
+     or pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'configuration_revision', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'id', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'organization_id', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'display_name', 'SELECT')
+     or not pg_catalog.has_column_privilege('authenticated', 'public.domo_connections', 'status', 'SELECT') then
+    raise exception 'domo_connections safe-column SELECT boundary is incorrect';
+  end if;
+
+  if pg_catalog.has_table_privilege('authenticated', 'public.service_titan_custom_endpoint_sources', 'INSERT,UPDATE,DELETE')
+     or pg_catalog.has_table_privilege('authenticated', 'public.domo_dataset_sources', 'INSERT,UPDATE,DELETE')
+     or pg_catalog.has_table_privilege('service_role', 'public.service_titan_custom_endpoint_sources', 'INSERT,UPDATE,DELETE')
+     or pg_catalog.has_table_privilege('service_role', 'public.domo_dataset_sources', 'INSERT,UPDATE,DELETE') then
+    raise exception 'custom endpoint and Domo sources must be mutation-free outside governed RPCs';
+  end if;
+
+  if not pg_catalog.has_function_privilege('authenticated',
+       'public.create_service_titan_custom_endpoint_source(uuid,uuid,text,text,text,text,jsonb,text,text,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated',
+       'public.archive_service_titan_custom_endpoint_source(uuid,uuid,integer)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated',
+       'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('authenticated',
+       'public.archive_domo_dataset_source(uuid,uuid,integer)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated',
+       'public.inspect_service_titan_custom_endpoint_source(uuid,uuid,text)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated',
+       'public.inspect_domo_dataset_source(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role',
+       'public.inspect_service_titan_custom_endpoint_source(uuid,uuid,text)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role',
+       'public.inspect_domo_dataset_source(uuid,uuid,text)', 'EXECUTE') then
+    raise exception 'data-source create/archive/inspect RPC ACL boundary is incorrect';
+  end if;
+
   if (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1) <> 36
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive') <> 8
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'revenue') <> 6
@@ -352,6 +396,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_data_platform_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260820002200_data_source_admin_hardening' then
+    raise exception 'data-platform release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -365,7 +416,9 @@ begin
     and function.oid not in (
       'public.get_release_readiness()'::pg_catalog.regprocedure,
       'public.get_division_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_region_release_readiness()'::pg_catalog.regprocedure
+      'public.get_region_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_endpoint_ingestion_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -403,7 +456,15 @@ begin
       'public.can_access_portfolio_brand(uuid)'::pg_catalog.regprocedure,
       'public.get_portfolio_overview()'::pg_catalog.regprocedure,
       'public.is_finite_numeric(numeric)'::pg_catalog.regprocedure,
-      'public.jsonb_has_forbidden_credential_keys(jsonb)'::pg_catalog.regprocedure
+      'public.jsonb_has_forbidden_credential_keys(jsonb)'::pg_catalog.regprocedure,
+      'public.get_endpoint_ingestion_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure,
+      'public.register_domo_connection_with_credentials(uuid,text,text,text)'::pg_catalog.regprocedure,
+      'public.disable_domo_connection(uuid,uuid,integer,integer)'::pg_catalog.regprocedure,
+      'public.create_service_titan_custom_endpoint_source(uuid,uuid,text,text,text,text,jsonb,text,text,text)'::pg_catalog.regprocedure,
+      'public.archive_service_titan_custom_endpoint_source(uuid,uuid,integer)'::pg_catalog.regprocedure,
+      'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text)'::pg_catalog.regprocedure,
+      'public.archive_domo_dataset_source(uuid,uuid,integer)'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;
