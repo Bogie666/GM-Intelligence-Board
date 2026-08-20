@@ -51,7 +51,11 @@ test("every migration-owned recipe version has an execution contract and categor
   }
   assert.deepEqual(
     Object.keys(ENDPOINT_RECIPE_EXECUTIONS).sort(),
-    ["active-memberships@1", "completed-appointments@1", "completed-revenue@1", "inbound-call-booking-rate@1", "sales-close-rate@1"],
+    [
+      "active-memberships@1", "average-invoice-ticket@1", "completed-appointments@1",
+      "completed-jobs-count@1", "completed-revenue@1", "inbound-call-booking-rate@1",
+      "inbound-calls-booked@1", "inbound-calls-not-booked@1", "sales-close-rate@1",
+    ],
   );
 });
 
@@ -143,6 +147,113 @@ test("sales-close-rate recipe computes a governed ratio and rejects zero denomin
     period: PERIOD,
     options: { fetchImpl: emptyFetch },
   }), (error) => error.code === "endpoint_denominator_zero");
+});
+
+test("completed-jobs-count recipe counts business-unit-scoped jobs with exclusive upper bound", async () => {
+  const { fetchImpl, calls } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", () => jsonResponse({
+      page: 1, pageSize: 500, hasMore: false,
+      data: [
+        { id: 1, businessUnitId: 42 },
+        { id: 2, businessUnitId: 42 },
+        { id: 3, businessUnitId: 77 },
+      ],
+    })],
+  ]);
+  const result = await executeEndpointRecipe({
+    credentials: CREDENTIALS,
+    environment: "production",
+    tenantId: "tenant-1",
+    recipeId: "completed-jobs-count",
+    recipeVersion: 1,
+    businessUnitMappings: { includedBusinessUnitIds: [42] },
+    period: PERIOD,
+    options: { fetchImpl },
+  });
+  assert.equal(result.decimalValue, "2");
+  assert.equal(result.totalRowCount, 3);
+  const listCall = calls.find((call) => call.url.includes("/jobs"));
+  assert.match(listCall.url, /completedOnOrAfter=/);
+  assert.match(listCall.url, /completedBefore=/);
+  assert.doesNotMatch(listCall.url, /completedOnOrBefore=/);
+});
+
+test("average-invoice-ticket recipe divides Decimal totals by invoice count and fails closed on empty periods", async () => {
+  const { fetchImpl } = fetchStub([
+    tokenRoute,
+    ["/accounting/v2/tenant/tenant-1/invoices", () => jsonResponse({
+      page: 1, pageSize: 500, hasMore: false,
+      data: [
+        { id: 1, total: "100.10", businessUnit: { id: 42 } },
+        { id: 2, total: "199.90", businessUnit: { id: 42 } },
+      ],
+    })],
+  ]);
+  const result = await executeEndpointRecipe({
+    credentials: CREDENTIALS,
+    environment: "production",
+    tenantId: "tenant-1",
+    recipeId: "average-invoice-ticket",
+    recipeVersion: 1,
+    businessUnitMappings: { includedBusinessUnitIds: [42] },
+    period: PERIOD,
+    options: { fetchImpl },
+  });
+  assert.equal(result.decimalValue, "150");
+  assert.equal(result.decimalNumerator, "300");
+  assert.equal(result.decimalDenominator, "2");
+
+  const { fetchImpl: emptyFetch } = fetchStub([
+    tokenRoute,
+    ["/accounting/v2/tenant/tenant-1/invoices", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [] })],
+  ]);
+  await assert.rejects(executeEndpointRecipe({
+    credentials: CREDENTIALS,
+    environment: "production",
+    tenantId: "tenant-1",
+    recipeId: "average-invoice-ticket",
+    recipeVersion: 1,
+    businessUnitMappings: {},
+    period: PERIOD,
+    options: { fetchImpl: emptyFetch },
+  }), (error) => error.code === "endpoint_denominator_zero");
+});
+
+test("inbound call booking recipes split booked and non-booked non-abandoned calls", async () => {
+  const callsPayload = () => jsonResponse({
+    page: 1, pageSize: 500, hasMore: false,
+    data: [
+      { id: 1, jobNumber: "J-100", callType: "Booked" },
+      { id: 2, jobNumber: 200, callType: null },
+      { id: 3, jobNumber: "", callType: "Unbooked" },
+      { id: 4, callType: "Abandoned" },
+      { id: 5, callType: "NotLead" },
+    ],
+  });
+  const run = async (recipeId) => {
+    const { fetchImpl, calls } = fetchStub([
+      tokenRoute,
+      ["/telecom/v2/tenant/tenant-1/calls", callsPayload],
+    ]);
+    const result = await executeEndpointRecipe({
+      credentials: CREDENTIALS,
+      environment: "production",
+      tenantId: "tenant-1",
+      recipeId,
+      recipeVersion: 1,
+      businessUnitMappings: {},
+      period: PERIOD,
+      options: { fetchImpl },
+    });
+    const listCall = calls.find((call) => call.url.includes("/calls"));
+    assert.match(listCall.url, /direction=Inbound/);
+    return result;
+  };
+  const booked = await run("inbound-calls-booked");
+  assert.equal(booked.decimalValue, "2");
+  const notBooked = await run("inbound-calls-not-booked");
+  assert.equal(notBooked.decimalValue, "2");
 });
 
 test("endpoint pagination follows hasMore and enforces the page safety limit", async () => {

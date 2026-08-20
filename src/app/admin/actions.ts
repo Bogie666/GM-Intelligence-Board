@@ -718,3 +718,28 @@ export async function activateOriginalKpiCatalogAction(
       : `${data} original KPI definition${data === 1 ? "" : "s"} published. Data remains explicitly unavailable until each KPI's source and location bindings are governed.`,
   };
 }
+
+export async function generateCatalogBindingsAction(
+  _previousState: AdminActionState,
+  formData: FormData,
+): Promise<AdminActionState> {
+  const writable = await requireAdminMutation();
+  if (writable.ok === false) return writable.state;
+  if (input(formData, "confirmGeneration") !== "yes") {
+    return { status: "error", message: "Confirm that draft bindings will be generated for every wired catalog KPI and assigned location." };
+  }
+  const { data, error } = await writable.supabase.supabase.rpc(
+    "generate_catalog_recipe_bindings",
+    { p_organization_id: writable.organizationId },
+  );
+  if (error || typeof data !== "number" || data < 0 || data > 10000) {
+    return rpcConfigurationError("Catalog binding generation", error);
+  }
+  refreshTenantPages();
+  return {
+    status: "success",
+    message: data === 0
+      ? "Every wired catalog KPI already has a binding for each assigned location; no new drafts were created."
+      : `${data} draft binding${data === 1 ? "" : "s"} generated. Each draft still requires trusted operator approval (npm run data-source:approve) before any data is ingested.`,
+  };
+}

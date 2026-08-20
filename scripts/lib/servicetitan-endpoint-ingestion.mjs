@@ -262,7 +262,67 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       return ratioResult(new Decimal(booked), new Decimal(items.length));
     },
   },
+  // Catalog v2 recipes. Query semantics ported from the proven lexkpi sync
+  // modules: /jpm/v2/jobs accepts completedOnOrAfter but silently ignores
+  // completedOnOrBefore (the exclusive upper bound is completedBefore), and a
+  // booked inbound call is one with a job number attached.
+  "completed-jobs-count@1": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["completedOnOrAfter", period.start.toISOString()],
+      ["completedBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => reducedResult(new Decimal(items.length)),
+  },
+  "average-invoice-ticket@1": {
+    category: "invoices",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnit.id",
+    query: (period) => [
+      ["invoicedOnOrAfter", period.start.toISOString()],
+      ["invoicedOnBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      let total = new Decimal(0);
+      for (const item of items) total = total.plus(toDecimal(item.total ?? "0", "Invoice total"));
+      return ratioResult(total, new Decimal(items.length));
+    },
+  },
+  "inbound-calls-booked@1": {
+    category: "calls",
+    supportsBusinessUnitFilter: false,
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+      ["direction", "Inbound"],
+    ],
+    reduce: (items) => reducedResult(new Decimal(items.filter((item) => hasJobNumber(item)).length)),
+  },
+  "inbound-calls-not-booked@1": {
+    category: "calls",
+    supportsBusinessUnitFilter: false,
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+      ["direction", "Inbound"],
+    ],
+    reduce: (items) => {
+      const notBooked = items.filter((item) => {
+        const type = typeof item.callType === "string" ? item.callType.toLowerCase() : "";
+        return !hasJobNumber(item) && type !== "abandoned";
+      }).length;
+      return reducedResult(new Decimal(notBooked));
+    },
+  },
 });
+
+function hasJobNumber(item) {
+  if (typeof item.jobNumber === "string" && item.jobNumber.trim() !== "") return true;
+  if (typeof item.jobNumber === "number" && Number.isFinite(item.jobNumber)) return true;
+  return false;
+}
 
 export function getEndpointRecipeExecution(recipeId, recipeVersion) {
   const execution = ENDPOINT_RECIPE_EXECUTIONS[`${recipeId}@${recipeVersion}`];

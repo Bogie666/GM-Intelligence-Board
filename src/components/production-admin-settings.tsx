@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import type { AdminActionState } from "@/app/admin/actions";
+import { generateCatalogBindingsAction } from "@/app/admin/actions";
 import {
   assignProfileLayoutAction,
   registerReportSourceAction,
@@ -47,6 +48,33 @@ function WorkspaceWarnings({ workspace, area }: { workspace: ProductionAdminSett
   ) : null;
 }
 
+
+function CatalogBindingGenerator({ workspace }: { workspace: ProductionAdminSettingsWorkspace }) {
+  const [state, action] = useActionState(generateCatalogBindingsAction, INITIAL);
+  const wiredRecipeIds = new Set(serviceTitanEndpointRecipes.map((recipe) => recipe.id));
+  const wiredKpiCount = workspace.kpiDefinitions.filter((definition) => {
+    const recipeId = definition.external_source?.endpointRecipeId;
+    return typeof recipeId === "string" && wiredRecipeIds.has(recipeId);
+  }).length;
+  return (
+    <section className="production-section">
+      <div className="production-section-title"><div><span>One-click draft coverage</span><h2>Generate bindings for enabled KPIs</h2></div><strong>{wiredKpiCount}</strong></div>
+      <p className="production-muted-copy">
+        Creates a draft endpoint-recipe binding for every enabled original-catalog KPI that has a wired recipe, across every active
+        location assigned to a validated connection. Existing bindings are never modified. Drafts remain non-ingestible until a trusted
+        operator approves each one with a live sample (<code>npm run data-source:approve</code>).
+      </p>
+      <form action={action} className="production-form-grid">
+        <input type="hidden" name="confirmGeneration" value="yes" />
+        <div className="production-form-footer">
+          <span>{wiredKpiCount === 0 ? "No enabled KPI currently carries a wired endpoint recipe. Enable catalog KPIs first." : `${wiredKpiCount} enabled KPI${wiredKpiCount === 1 ? " carries" : "s carry"} a wired endpoint recipe.`}</span>
+          <Submit disabled={wiredKpiCount === 0}>Generate draft bindings</Submit>
+        </div>
+      </form>
+      <Notice state={state} />
+    </section>
+  );
+}
 
 function SourceBindingForm({ tenant, workspace }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace }) {
   const [state, action] = useActionState(saveKpiBindingAction, INITIAL);
@@ -172,7 +200,7 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
           {workspace.reportSources.length === 0 ? <div className="production-empty">No saved report source has been registered for this tenant.</div> : null}
         </div>
       </section>
-      {!dataSourceControlsUnavailable ? <><ProductionAdditionalDataSources tenant={tenant} workspace={workspace} /><SourceBindingForm tenant={tenant} workspace={workspace} /></> : null}
+      {!dataSourceControlsUnavailable ? <><CatalogBindingGenerator workspace={workspace} /><ProductionAdditionalDataSources tenant={tenant} workspace={workspace} /><SourceBindingForm tenant={tenant} workspace={workspace} /></> : null}
       <section className="production-section">
         <div className="production-section-title"><div><span>Exact-location registry</span><h2>KPI bindings</h2></div><strong>{workspace.bindings.length}</strong></div>
         <p className="production-muted-copy">Draft bindings are intentionally non-ingestible. Saved reports and endpoint recipes expose trusted operator handoffs; custom endpoint and Domo bindings use authenticated server-side reconciliation. Configured cadence indicates scheduler eligibility, not proof that an external scheduler is deployed.</p>
