@@ -1,7 +1,7 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTROL_PATTERN = /\p{Cc}/u;
 const ENDPOINT_PAGE_SIZE = 500;
-const MAX_ENDPOINT_PAGES = 40;
+const MAX_ENDPOINT_PAGES = 200;
 const ENDPOINT_RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024;
 
 import { createHash } from "node:crypto";
