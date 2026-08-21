@@ -52,9 +52,12 @@ test("every migration-owned recipe version has an execution contract and categor
   assert.deepEqual(
     Object.keys(ENDPOINT_RECIPE_EXECUTIONS).sort(),
     [
-      "active-memberships@1", "average-invoice-ticket@1", "completed-appointments@1",
-      "completed-jobs-count@1", "completed-revenue@1", "inbound-call-booking-rate@1",
-      "inbound-calls-booked@1", "inbound-calls-not-booked@1", "sales-close-rate@1",
+      "active-memberships@1", "average-invoice-ticket@1", "canceled-memberships@1",
+      "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1",
+      "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-calls-booked@1",
+      "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
+      "membership-net-growth@1", "new-memberships@1", "sales-close-rate@1",
+      "sold-estimates-value@1",
     ],
   );
 });
@@ -470,4 +473,61 @@ test("observation windows: empty calendar window at exact local midnight fails c
   assert.throws(() => deriveObservationPeriod({
     observation_window: "today", refresh_interval: "15m", location_timezone: "America/Chicago",
   }, now), /empty/i);
+});
+
+test("observation windows: ytd anchors to local January 1 midnight", () => {
+  const now = new Date("2026-08-20T15:37:42.500Z");
+  const period = deriveObservationPeriod({
+    observation_window: "ytd", refresh_interval: "4h", location_timezone: "America/Chicago",
+  }, now);
+  // 2026-01-01T00:00:00 America/Chicago (CST, UTC-6) = 06:00Z.
+  assert.equal(period.start.toISOString(), "2026-01-01T06:00:00.000Z");
+  assert.equal(period.end.toISOString(), "2026-08-20T15:37:00.000Z");
+});
+
+test("tranche-1 recipes: inbound calls and booking rate v2 use job-number semantics", () => {
+  const calls = [
+    { direction: "Inbound", callType: "Booked", jobNumber: "123" },
+    { direction: "Inbound", callType: "Unbooked", jobNumber: null },
+    { direction: "Inbound", callType: "Abandoned", jobNumber: null },
+    { direction: "Inbound", callType: "Excused", jobNumber: 456 },
+  ];
+  const countRecipe = getEndpointRecipeExecution("inbound-calls-count", 1);
+  assert.equal(countRecipe.reduce(calls).decimalValue, "3"); // abandoned excluded
+  const rate = getEndpointRecipeExecution("inbound-call-booking-rate", 2).reduce(calls);
+  assert.equal(rate.decimalNumerator, "2");   // two calls carry job numbers
+  assert.equal(rate.decimalDenominator, "3"); // abandoned excluded
+});
+
+test("tranche-1 recipes: membership windows are enforced client-side", () => {
+  const period = { start: new Date("2026-08-01T05:00:00Z"), end: new Date("2026-08-21T00:00:00Z") };
+  const members = [
+    { createdOn: "2026-08-05T12:00:00Z", status: "Active", cancellationDate: null },
+    { createdOn: "2026-07-01T12:00:00Z", status: "Canceled", cancellationDate: "2026-08-10T00:00:00Z" },
+    { createdOn: "2026-07-01T12:00:00Z", status: "Canceled", cancellationDate: "2025-11-14T00:00:00Z" },
+    { createdOn: "2026-08-15T12:00:00Z", status: "Canceled", cancellationDate: "2026-08-18T00:00:00Z" },
+  ];
+  const canceled = getEndpointRecipeExecution("canceled-memberships", 1);
+  assert.equal(canceled.reduce(members, period).decimalValue, "2"); // only in-period cancellations
+  const net = getEndpointRecipeExecution("membership-net-growth", 1);
+  assert.equal(net.reduce(members, period).decimalValue, "0"); // 2 created - 2 canceled
+});
+
+test("tranche-1 recipes: sold estimates sum subtotals of sold status only", () => {
+  const estimates = [
+    { status: { name: "Sold" }, subtotal: 2800 },
+    { status: { name: "Sold" }, subtotal: 150.5 },
+    { status: { name: "Open" }, subtotal: 99999 },
+  ];
+  const recipe = getEndpointRecipeExecution("sold-estimates-value", 1);
+  assert.equal(recipe.reduce(estimates).decimalValue, "2950.5");
+});
+
+test("tranche-1 recipes: appointment-window jobs use period-bounded query filters", () => {
+  const period = { start: new Date("2026-08-20T05:00:00Z"), end: new Date("2026-08-21T05:00:00Z") };
+  const recipe = getEndpointRecipeExecution("jobs-with-appointments-count", 1);
+  const query = Object.fromEntries(recipe.query(period));
+  assert.equal(query.appointmentStartsOnOrAfter, "2026-08-20T05:00:00.000Z");
+  assert.equal(query.appointmentStartsBefore, "2026-08-21T05:00:00.000Z");
+  assert.equal(recipe.reduce([{}, {}, {}]).decimalValue, "3");
 });

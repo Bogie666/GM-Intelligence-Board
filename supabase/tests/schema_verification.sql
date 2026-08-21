@@ -287,7 +287,7 @@ begin
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'appointments') <> 5
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'sales') <> 6
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'membership') <> 5
-     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and endpoint_recipe_id is not null) <> 15
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and endpoint_recipe_id is not null) <> 23
      or exists (
        select 1 from public.original_kpi_catalog catalog
        join (
@@ -310,8 +310,26 @@ begin
        ) as expected_wiring(kpi_key, recipe_id)
          on expected_wiring.kpi_key = catalog.kpi_key
        where catalog.catalog_version = 1
-         and (catalog.endpoint_recipe_id is distinct from expected_wiring.recipe_id
-              or catalog.endpoint_recipe_version is distinct from 1)
+         and catalog.endpoint_recipe_id is distinct from expected_wiring.recipe_id
+     )
+     or exists (
+       select 1 from public.original_kpi_catalog catalog
+       join (
+         values
+           ('booking-rate', 'inbound-call-booking-rate', 2),
+           ('ytd-revenue', 'completed-revenue', 1),
+           ('inbound-calls', 'inbound-calls-count', 1),
+           ('new-members', 'new-memberships', 1),
+           ('member-cancels', 'canceled-memberships', 1),
+           ('membership-net', 'membership-net-growth', 1),
+           ('pipeline', 'sold-estimates-value', 1),
+           ('hvac-sales-appts', 'jobs-with-appointments-count', 1),
+           ('plumbing-appts', 'jobs-with-appointments-count', 1)
+       ) as tranche1(kpi_key, recipe_id, recipe_version)
+         on tranche1.kpi_key = catalog.kpi_key
+       where catalog.catalog_version = 1
+         and (catalog.endpoint_recipe_id is distinct from tranche1.recipe_id
+              or catalog.endpoint_recipe_version is distinct from tranche1.recipe_version)
      )
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive'
           and pg_catalog.jsonb_array_length(playbook) = 2) <> 8
@@ -449,6 +467,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_tranche1_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260821000100_tranche1_catalog_recipes' then
+    raise exception 'tranche1 release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -467,7 +492,8 @@ begin
       'public.get_data_platform_release_readiness()'::pg_catalog.regprocedure,
       'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure,
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure
+      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -519,7 +545,8 @@ begin
       'public.is_portfolio_owner()'::pg_catalog.regprocedure,
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
       'public.generate_catalog_recipe_bindings(uuid)'::pg_catalog.regprocedure,
-      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure
+      'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;

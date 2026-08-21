@@ -146,7 +146,7 @@ export function deriveBindingPeriod(refreshInterval, now = new Date()) {
   return { start: new Date(end.getTime() - intervalMs), end };
 }
 
-const OBSERVATION_WINDOWS = Object.freeze(["trailing", "today", "mtd"]);
+const OBSERVATION_WINDOWS = Object.freeze(["trailing", "today", "mtd", "ytd"]);
 
 /** Reads a wall-clock component map for an instant in a named IANA timezone. */
 function zonedParts(instant, timeZone) {
@@ -205,9 +205,11 @@ export function deriveObservationPeriod(binding, now = new Date()) {
   }
   const end = new Date(Math.floor(now.getTime() / 60_000) * 60_000);
   const local = zonedParts(end, timeZone);
-  const anchor = window === "mtd"
-    ? { year: local.year, month: local.month, day: 1 }
-    : { year: local.year, month: local.month, day: local.day };
+  const anchor = window === "ytd"
+    ? { year: local.year, month: 1, day: 1 }
+    : window === "mtd"
+      ? { year: local.year, month: local.month, day: 1 }
+      : { year: local.year, month: local.month, day: local.day };
   const start = zonedTimeToUtc(anchor, timeZone);
   if (!(start.getTime() < end.getTime())) {
     throw new WorkerError("observation-period-empty", "The calendar observation window is empty at this instant.");

@@ -300,6 +300,97 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
     ],
     reduce: (items) => reducedResult(new Decimal(items.filter((item) => hasJobNumber(item)).length)),
   },
+  // Tranche-1 recipes (2026-08-21). Query semantics verified against the live
+  // tenant: memberships honor createdOnOrAfter/createdBefore; canceled
+  // memberships are windowed client-side on cancellationDate because the API
+  // has no cancellation-date filter (modifiedOnOrAfter bounds the fetch);
+  // estimates honor soldAfter/soldBefore with subtotal + businessUnitId; jobs
+  // honor appointmentStartsOnOrAfter/appointmentStartsBefore.
+  "inbound-calls-count@1": {
+    category: "calls",
+    supportsBusinessUnitFilter: false,
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+      ["direction", "Inbound"],
+    ],
+    reduce: (items) => reducedResult(new Decimal(items.filter((item) => !isAbandonedCall(item)).length)),
+  },
+  "inbound-call-booking-rate@2": {
+    category: "calls",
+    supportsBusinessUnitFilter: false,
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+      ["direction", "Inbound"],
+    ],
+    reduce: (items) => {
+      const qualified = items.filter((item) => !isAbandonedCall(item));
+      const booked = qualified.filter((item) => hasJobNumber(item));
+      return ratioResult(new Decimal(booked.length), new Decimal(qualified.length));
+    },
+  },
+  "new-memberships@1": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => reducedResult(new Decimal(items.length)),
+  },
+  "canceled-memberships@1": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["modifiedOnOrAfter", period.start.toISOString()],
+      ["status", "Canceled"],
+    ],
+    reduce: (items, period) => reducedResult(new Decimal(
+      items.filter((item) => timestampWithinPeriod(item.cancellationDate, period)).length,
+    )),
+  },
+  "membership-net-growth@1": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [["modifiedOnOrAfter", period.start.toISOString()]],
+    reduce: (items, period) => {
+      const created = items.filter((item) => timestampWithinPeriod(item.createdOn, period)).length;
+      const canceled = items.filter((item) =>
+        statusName(item).toLowerCase() === "canceled" && timestampWithinPeriod(item.cancellationDate, period)).length;
+      return reducedResult(new Decimal(created).minus(new Decimal(canceled)));
+    },
+  },
+  "sold-estimates-value@1": {
+    category: "estimates",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["soldAfter", period.start.toISOString()],
+      ["soldBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      let total = new Decimal(0);
+      for (const item of items) {
+        if (statusName(item).toLowerCase() !== "sold") continue;
+        total = total.plus(toDecimal(item.subtotal ?? "0", "Estimate subtotal"));
+      }
+      return reducedResult(total);
+    },
+  },
+  "jobs-with-appointments-count@1": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["appointmentStartsOnOrAfter", period.start.toISOString()],
+      ["appointmentStartsBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => reducedResult(new Decimal(items.length)),
+  },
   "inbound-calls-not-booked@1": {
     category: "calls",
     supportsBusinessUnitFilter: false,
@@ -317,6 +408,18 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
     },
   },
 });
+
+function isAbandonedCall(item) {
+  return typeof item.callType === "string" && item.callType.toLowerCase() === "abandoned";
+}
+
+/** True when the ISO-ish timestamp falls inside [period.start, period.end). */
+function timestampWithinPeriod(value, period) {
+  if (typeof value !== "string" || value.trim() === "") return false;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return false;
+  return time >= period.start.getTime() && time < period.end.getTime();
+}
 
 function hasJobNumber(item) {
   if (typeof item.jobNumber === "string" && item.jobNumber.trim() !== "") return true;
@@ -359,7 +462,7 @@ export async function executeEndpointRecipe({
   const filtered = includedIds
     ? items.filter((item) => matchesBusinessUnit(item, includedIds, execution.businessUnitField))
     : items;
-  return { ...execution.reduce(filtered), rowCount: filtered.length, totalRowCount: items.length, pageCount };
+  return { ...execution.reduce(filtered, period), rowCount: filtered.length, totalRowCount: items.length, pageCount };
 }
 
 /** Validates that every custom endpoint observation is bound to its worker period. */

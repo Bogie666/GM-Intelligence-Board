@@ -30,7 +30,7 @@ import { validateUuid } from "@/lib/tenant-context";
 import type { AdminActionState } from "./actions";
 
 const SOURCE_METHODS = new Set(["endpoint_recipe", "saved_report", "custom_endpoint", "domo_dataset"]);
-const OBSERVATION_WINDOWS = new Set(["trailing", "today", "mtd"]);
+const OBSERVATION_WINDOWS = new Set(["trailing", "today", "mtd", "ytd"]);
 const REPORT_REDUCTIONS = new Set(["sum", "average", "count", "ratio"]);
 const ENDPOINT_REFRESH_INTERVALS = new Set(["15m", "30m", "1h", "4h", "12h", "24h"]);
 const REPORT_REFRESH_INTERVALS = new Set(["4h", "12h", "24h"]);
