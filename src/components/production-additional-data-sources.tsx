@@ -25,6 +25,7 @@ import type {
   ProductionKpiBinding,
 } from "@/lib/production-admin-settings";
 import type { ProductionTenantContext } from "@/lib/tenant-context";
+import { selectableServiceTitanEndpointRecipes } from "@/lib/service-titan-sources";
 
 const INITIAL: AdminActionState = { status: "idle", message: "" };
 
@@ -167,7 +168,10 @@ function AdditionalBindingForm({ mode, tenant, workspace }: { mode: "endpoint_re
   const selectableConnections = isDomo
     ? domoConnections.map((connection) => ({ id: connection.id, label: connection.display_name }))
     : serviceTitanConnections.map((connection) => ({ id: connection.id, label: `${connection.display_name} · ${connection.service_titan_tenant_id}` }));
-  const recipeOptions = [...new Map(workspace.endpointRecipes.map((recipe) => [`${recipe.endpoint_recipe_id}|${recipe.endpoint_recipe_version}`, recipe])).values()];
+  const selectableRecipeKeys = new Set(selectableServiceTitanEndpointRecipes.map((recipe) => `${recipe.id}|${recipe.version}`));
+  const recipeOptions = [...new Map(workspace.endpointRecipes
+    .filter((recipe) => selectableRecipeKeys.has(`${recipe.endpoint_recipe_id}|${recipe.endpoint_recipe_version}`))
+    .map((recipe) => [`${recipe.endpoint_recipe_id}|${recipe.endpoint_recipe_version}`, recipe])).values()];
   const [recipeId = "", recipeVersion = ""] = recipeKey.split("|");
   const selectedRecipePolicies = workspace.endpointRecipes.filter((policy) => `${policy.endpoint_recipe_id}|${policy.endpoint_recipe_version}` === recipeKey);
   const cadenceOptions = mode === "endpoint_recipe"

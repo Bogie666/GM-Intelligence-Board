@@ -6,6 +6,7 @@ import {
   normalizeServiceTitanSourceStore,
   readServiceTitanSourceStore,
   refreshOptionsForMethod,
+  selectableServiceTitanEndpointRecipes,
   serviceTitanEndpointRecipes,
   staleHoursForRefresh,
   upsertServiceTitanReportSource,
@@ -41,6 +42,17 @@ describe("governed ServiceTitan sources", () => {
       expect(recipe.capability.length).toBeGreaterThan(0);
       expect(recipe.lineage.length).toBeGreaterThan(0);
     }
+  });
+
+  it("retires inbound booking-rate v1 and v2 from new selections while retaining historical lineage", () => {
+    expect(serviceTitanEndpointRecipes
+      .filter((recipe) => recipe.id === "inbound-call-booking-rate")
+      .map((recipe) => [recipe.version, recipe.retired === true]))
+      .toEqual([[1, true], [2, true], [3, false]]);
+    expect(selectableServiceTitanEndpointRecipes
+      .filter((recipe) => recipe.id === "inbound-call-booking-rate")
+      .map((recipe) => recipe.version))
+      .toEqual([3]);
   });
 
   it("rejects duplicate report IDs for one connection and requires numeric fields", () => {

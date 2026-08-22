@@ -28,7 +28,13 @@ vi.mock("@/lib/auth", () => ({
     supabase: fakeSupabase,
   } : { ok: false },
 }));
-vi.mock("@/lib/service-titan-sources", () => ({ reportSchemaFingerprint: () => "sha256:test" }));
+vi.mock("@/lib/service-titan-sources", () => ({
+  reportSchemaFingerprint: () => "sha256:test",
+  selectableServiceTitanEndpointRecipes: [
+    { id: "completed-jobs-count", version: 1 },
+    { id: "inbound-call-booking-rate", version: 3 },
+  ],
+}));
 vi.mock("@/lib/custom-endpoint-sources", () => ({
   validateCustomEndpointSourceInput: (value: Record<string, string>) => {
     try {
@@ -216,16 +222,16 @@ describe("four governed binding methods", () => {
   });
 
   it.each([
-    ["endpoint_recipe", { endpoint_recipe_id: "jobs.completed", endpoint_recipe_version: 1 }],
+    ["endpoint_recipe", { endpoint_recipe_id: "completed-jobs-count", endpoint_recipe_version: 1 }],
     ["saved_report", { report_source_id: IDS.source, report_reduction: "sum", value_field: "Total" }],
     ["custom_endpoint", { custom_endpoint_source_id: IDS.source }],
   ] as const)("saves %s with every other source family cleared", async (method, expected) => {
     mocks.fixtures.set("custom_kpi_definitions", { id: IDS.definition, type: "service_titan", external_source: null });
-    if (method === "endpoint_recipe") mocks.fixtures.set("service_titan_endpoint_recipe_refresh_policies", { endpoint_recipe_id: "jobs.completed" });
+    if (method === "endpoint_recipe") mocks.fixtures.set("service_titan_endpoint_recipe_refresh_policies", { endpoint_recipe_id: "completed-jobs-count" });
     if (method === "saved_report") mocks.fixtures.set("service_titan_report_sources", { id: IDS.source, fields: [{ name: "Total", type: "number" }], parameters: [] });
     if (method === "custom_endpoint") mocks.fixtures.set("service_titan_custom_endpoint_sources", { id: IDS.source });
     const data = baseBinding(method);
-    if (method === "endpoint_recipe") { data.set("endpointRecipeId", "jobs.completed"); data.set("endpointRecipeVersion", "1"); }
+    if (method === "endpoint_recipe") { data.set("endpointRecipeId", "completed-jobs-count"); data.set("endpointRecipeVersion", "1"); }
     if (method === "saved_report") { data.set("reportSourceId", IDS.source); data.set("reportReduction", "sum"); data.set("valueField", "Total"); }
     if (method === "custom_endpoint") data.set("customEndpointSourceId", IDS.source);
     const result = await saveKpiBindingAction(INITIAL, data);
@@ -236,6 +242,17 @@ describe("four governed binding methods", () => {
     for (const key of ["endpoint_recipe_id", "endpoint_recipe_version", "report_source_id", "custom_endpoint_source_id", "domo_connection_id", "domo_dataset_source_id"]) {
       if (!selected.has(key)) expect(row?.[key]).toBeNull();
     }
+  });
+
+  it("rejects retired inbound booking-rate recipe versions even when a crafted request bypasses the UI", async () => {
+    mocks.fixtures.set("custom_kpi_definitions", { id: IDS.definition, type: "service_titan", external_source: null });
+    const data = baseBinding("endpoint_recipe");
+    data.set("endpointRecipeId", "inbound-call-booking-rate");
+    data.set("endpointRecipeVersion", "2");
+    const result = await saveKpiBindingAction(INITIAL, data);
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("retired");
+    expect(mocks.upserts).toHaveLength(0);
   });
 
   it("saves an exact Domo binding without any ServiceTitan assignment or stale source columns", async () => {

@@ -316,7 +316,7 @@ begin
        select 1 from public.original_kpi_catalog catalog
        join (
          values
-           ('booking-rate', 'inbound-call-booking-rate', 2),
+           ('booking-rate', 'inbound-call-booking-rate', 3),
            ('ytd-revenue', 'completed-revenue', 1),
            ('inbound-calls', 'inbound-calls-count', 1),
            ('new-members', 'new-memberships', 1),
@@ -474,6 +474,13 @@ begin
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
+  from public.get_booking_rate_v3_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260822000100_qualified_call_booking_rate_v3' then
+    raise exception 'booking-rate v3 release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
   from public.get_release_readiness() readiness;
   if release_marker is distinct from '20260819001600_enterprise_admin_hardening' then
     raise exception 'rolling compatibility release marker is incorrect: %', release_marker;
@@ -493,7 +500,8 @@ begin
       'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure,
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
       'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure
+      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -546,7 +554,8 @@ begin
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
       'public.generate_catalog_recipe_bindings(uuid)'::pg_catalog.regprocedure,
       'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure
+      'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;

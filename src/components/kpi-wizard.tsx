@@ -43,6 +43,7 @@ import {
   createSeedServiceTitanSourceStore,
   readServiceTitanSourceStore,
   refreshOptionsForMethod,
+  selectableServiceTitanEndpointRecipes,
   serviceTitanEndpointRecipes,
   staleHoursForRefresh,
   validateReportParameterValues,
@@ -357,7 +358,7 @@ export function KpiWizard({
 
   function selectType(type: CustomKpiDefinition["type"]) {
     if (type === "service-titan") {
-      const recipe = serviceTitanEndpointRecipes[0];
+      const recipe = selectableServiceTitanEndpointRecipes[0];
       const base: ServiceTitanKpiSource = {
         method: "endpoint-recipe",
         refreshInterval: recipe.defaultRefreshInterval,
@@ -382,7 +383,7 @@ export function KpiWizard({
   }
 
   function selectServiceTitanMethod(method: ServiceTitanSourceMethod) {
-    const recipe = serviceTitanEndpointRecipes[0];
+    const recipe = selectableServiceTitanEndpointRecipes[0];
     const existingBindings = source?.tenantBindings ?? [];
     const nextSource: ServiceTitanKpiSource = method === "endpoint-recipe"
       ? {
@@ -728,7 +729,7 @@ export function KpiWizard({
               <button type="button" className={source.method === "saved-report" ? "selected" : ""} aria-pressed={source.method === "saved-report"} onClick={() => selectServiceTitanMethod("saved-report")}><FileInput/><div><strong>Approved saved report</strong><span>Reporting API v2 IDs · inspected schema · reconciled sample</span><small>Typed report parameters; 4/12/24-hour cadence and fail-closed stale values.</small></div></button>
             </div>
             <div className="wizard-form-grid source-controls">
-              {source.method === "endpoint-recipe" && <label className="span-two">Endpoint recipe<select value={source.endpointRecipeId ?? ""} onChange={(event) => { const recipe=serviceTitanEndpointRecipes.find((item) => item.id===event.target.value); if (recipe) { setObservationDrafts({}); patch({kind:recipe.outputKind,serviceTitanSource:clearObservations({...source,endpointRecipeId:recipe.id,endpointRecipeVersion:recipe.version,refreshInterval:recipe.defaultRefreshInterval})}); } }}><option value="">Select recipe…</option>{serviceTitanEndpointRecipes.map((recipe) => <option value={recipe.id} key={recipe.id}>{recipe.name} · v{recipe.version} · {recipe.outputKind}</option>)}</select></label>}
+              {source.method === "endpoint-recipe" && <label className="span-two">Endpoint recipe<select value={source.endpointRecipeId ?? ""} onChange={(event) => { const recipe=selectableServiceTitanEndpointRecipes.find((item) => item.id===event.target.value); if (recipe) { setObservationDrafts({}); patch({kind:recipe.outputKind,serviceTitanSource:clearObservations({...source,endpointRecipeId:recipe.id,endpointRecipeVersion:recipe.version,refreshInterval:recipe.defaultRefreshInterval})}); } }}><option value="">Select recipe…</option>{selectableServiceTitanEndpointRecipes.map((recipe) => <option value={recipe.id} key={`${recipe.id}:${recipe.version}`}>{recipe.name} · v{recipe.version} · {recipe.outputKind}</option>)}</select></label>}
               <label>Data refresh frequency<select value={source.refreshInterval} onChange={(event) => patchServiceTitanSource({refreshInterval:event.target.value as ServiceTitanRefreshInterval})}>{refreshOptionsForMethod(source.method).filter((option) => !selectedRecipe || selectedRecipe.allowedRefreshIntervals.includes(option.id)).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><small className="input-help">{cadence?.description}</small></label>
               <label>Automatic stale threshold<input readOnly value={staleHoursForRefresh(source.refreshInterval) ? `${staleHoursForRefresh(source.refreshInterval)} hours after as-of` : "Not set"}/><small className="input-help">A stale observation is shown only as unavailable history.</small></label>
             </div>

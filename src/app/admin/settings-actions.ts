@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getTenantAuthContext, isAdminRole } from "@/lib/auth";
 import { getAppConfig } from "@/lib/env";
-import { reportSchemaFingerprint, type ServiceTitanReportField } from "@/lib/service-titan-sources";
+import { reportSchemaFingerprint, selectableServiceTitanEndpointRecipes, type ServiceTitanReportField } from "@/lib/service-titan-sources";
 import { validateCustomEndpointSourceInput } from "@/lib/custom-endpoint-sources";
 import {
   validateBoundedDecimal,
@@ -33,6 +33,7 @@ const SOURCE_METHODS = new Set(["endpoint_recipe", "saved_report", "custom_endpo
 const OBSERVATION_WINDOWS = new Set(["trailing", "today", "mtd", "ytd"]);
 const REPORT_REDUCTIONS = new Set(["sum", "average", "count", "ratio"]);
 const ENDPOINT_REFRESH_INTERVALS = new Set(["15m", "30m", "1h", "4h", "12h", "24h"]);
+const SELECTABLE_ENDPOINT_RECIPE_KEYS = new Set(selectableServiceTitanEndpointRecipes.map((recipe) => `${recipe.id}:${recipe.version}`));
 const REPORT_REFRESH_INTERVALS = new Set(["4h", "12h", "24h"]);
 const CUSTOM_ENDPOINT_REFRESH_INTERVALS = new Set(["1h", "4h", "12h", "24h"]);
 const TARGET_LIFECYCLES = new Set(["draft", "published"]);
@@ -637,6 +638,9 @@ export async function saveKpiBindingAction(
       if (!recipeId || recipeId.length > 160 || !/^\d+$/.test(recipeVersionRaw)
         || !Number.isSafeInteger(recipeVersion) || recipeVersion < 1 || !ENDPOINT_REFRESH_INTERVALS.has(refreshInterval)) {
         return failure("Choose a governed endpoint recipe version and supported cadence.");
+      }
+      if (!SELECTABLE_ENDPOINT_RECIPE_KEYS.has(`${recipeId}:${recipeVersion}`)) {
+        return failure("That endpoint recipe version is retired and cannot be used for a new binding.");
       }
       const { data: recipe } = await writable.supabase.from("service_titan_endpoint_recipe_refresh_policies").select("endpoint_recipe_id")
         .eq("endpoint_recipe_id", recipeId).eq("endpoint_recipe_version", recipeVersion)

@@ -389,6 +389,27 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       return ratioResult(new Decimal(booked.length), new Decimal(items.length));
     },
   },
+  "inbound-call-booking-rate@3": {
+    category: "calls",
+    supportsBusinessUnitFilter: false,
+    // Telecom v2 does not support a direction query parameter. Fetch the
+    // bounded period and enforce inbound qualification in this trusted reducer.
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      let qualifiedLeads = 0;
+      let bookedJobsFromLeads = 0;
+      for (const item of items) {
+        const classification = classifyInboundCallLead(item);
+        if (!classification.qualified) continue;
+        qualifiedLeads += 1;
+        if (classification.booked) bookedJobsFromLeads += 1;
+      }
+      return ratioResult(new Decimal(bookedJobsFromLeads), new Decimal(qualifiedLeads));
+    },
+  },
   "new-memberships@1": {
     category: "memberships",
     supportsBusinessUnitFilter: true,
@@ -495,6 +516,57 @@ function hasJobNumber(item) {
   if (typeof item.jobNumber === "string" && item.jobNumber.trim() !== "") return true;
   if (typeof item.jobNumber === "number" && Number.isFinite(item.jobNumber)) return true;
   return false;
+}
+
+function normalizedCallClassification(value) {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/[^a-z]/g, "") : "";
+}
+
+function callDurationSeconds(value) {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{1,6}):([0-5]\d):([0-5]\d(?:\.\d+)?)$/.exec(value.trim());
+  if (!match) return null;
+  const seconds = (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]);
+  return Number.isFinite(seconds) ? seconds : null;
+}
+
+/**
+ * ServiceTitan dashboard call-lead semantics for Telecom v2 BundleCallModel.
+ * Booked/Unbooked are explicit service-lead outcomes. NotLead means an
+ * existing-job call and Excused means a non-service request; both override
+ * duration or a contradictory reason flag. Other inbound calls qualify at 60
+ * seconds or when their configured call reason is marked Is Lead.
+ */
+function classifyInboundCallLead(item) {
+  if (!isRecord(item) || !isRecord(item.leadCall)) {
+    fail("endpoint_response_invalid", "ServiceTitan returned a call without required leadCall details.");
+  }
+  const leadCall = item.leadCall;
+  const direction = normalizedCallClassification(leadCall.direction);
+  if (!direction || !["inbound", "outbound"].includes(direction)) {
+    fail("endpoint_response_invalid", "ServiceTitan returned a call without a governed direction.");
+  }
+  if (direction === "outbound") return { qualified: false, booked: false };
+
+  const callType = normalizedCallClassification(leadCall.callType);
+  if (!callType) fail("endpoint_response_invalid", "ServiceTitan returned an inbound call without a valid call type.");
+  if (callType === "notlead" || callType === "excused") return { qualified: false, booked: false };
+  if (callType === "booked" || callType === "unbooked") {
+    return { qualified: true, booked: callType === "booked" && hasJobNumber(item) };
+  }
+
+  const durationSeconds = callDurationSeconds(leadCall.duration);
+  if (durationSeconds === null) fail("endpoint_response_invalid", "ServiceTitan returned an inbound call with an invalid duration.");
+
+  let markedLead = false;
+  if (leadCall.reason !== null && leadCall.reason !== undefined) {
+    if (!isRecord(leadCall.reason) || (leadCall.reason.lead !== undefined && typeof leadCall.reason.lead !== "boolean")) {
+      fail("endpoint_response_invalid", "ServiceTitan returned an inbound call with an invalid lead reason.");
+    }
+    markedLead = leadCall.reason.lead === true;
+  }
+
+  return { qualified: durationSeconds >= 60 || markedLead, booked: false };
 }
 
 export function getEndpointRecipeExecution(recipeId, recipeVersion) {

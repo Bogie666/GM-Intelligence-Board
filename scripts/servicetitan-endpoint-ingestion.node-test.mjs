@@ -54,7 +54,7 @@ test("every migration-owned recipe version has an execution contract and categor
     [
       "active-memberships@1", "average-invoice-ticket@1", "average-invoice-ticket@2", "canceled-memberships@1",
       "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1", "completed-revenue@2",
-      "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-calls-booked@1",
+      "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-call-booking-rate@3", "inbound-calls-booked@1",
       "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
       "membership-net-growth@1", "new-memberships@1", "sales-close-rate@1", "sales-close-rate@2",
       "sold-estimates-value@1",
@@ -497,6 +497,46 @@ test("tranche-1 recipes: inbound calls and booking rate v2 use job-number semant
   const rate = getEndpointRecipeExecution("inbound-call-booking-rate", 2).reduce(calls);
   assert.equal(rate.decimalNumerator, "2");   // two calls carry job numbers
   assert.equal(rate.decimalDenominator, "4"); // total inbound (abandoned included)
+});
+
+test("inbound call booking rate v3 uses qualified inbound leads and booked-job outcomes", () => {
+  const calls = [
+    { jobNumber: "J-100", leadCall: { direction: "Inbound", duration: "00:02:15", callType: "Booked", reason: { lead: false } } },
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "00:01:00", callType: "Unbooked", reason: { lead: false } } },
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "00:00:35", callType: "Unbooked", reason: { lead: true } } },
+    { jobNumber: 200, leadCall: { direction: "Inbound", duration: "00:00:42", callType: "Booked", reason: null } },
+    { jobNumber: "EXISTING-1", leadCall: { direction: "Inbound", duration: "00:04:00", callType: "NotLead", reason: { lead: true } } },
+    { jobNumber: "EXCUSED-1", leadCall: { direction: "Inbound", duration: "00:03:00", callType: "Excused", reason: { lead: true } } },
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "00:01:01", callType: "Abandoned", reason: null } },
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "00:00:20", callType: "Other", reason: { lead: true } } },
+    { jobNumber: "OUTBOUND-1", leadCall: { direction: "Outbound", duration: "00:05:00", callType: "Booked", reason: { lead: true } } },
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "00:01:30", callType: "NotLead", reason: { lead: false } } },
+  ];
+
+  const recipe = getEndpointRecipeExecution("inbound-call-booking-rate", 3);
+  const query = Object.fromEntries(recipe.query(PERIOD));
+  assert.equal(query.direction, undefined, "unsupported direction query parameter must not be relied upon");
+
+  const rate = recipe.reduce(calls);
+  assert.equal(rate.decimalNumerator, "2");
+  assert.equal(rate.decimalDenominator, "6");
+  assert.equal(Number(rate.decimalValue).toFixed(4), "0.3333");
+});
+
+test("inbound call booking rate v3 fails closed on malformed governed call fields", () => {
+  const recipe = getEndpointRecipeExecution("inbound-call-booking-rate", 3);
+  assert.throws(() => recipe.reduce([{ jobNumber: "J-1" }]), (error) => error.code === "endpoint_response_invalid");
+  assert.throws(() => recipe.reduce([
+    { jobNumber: null, leadCall: { direction: "SchemaDrift", duration: "00:01:00", callType: "Unbooked" } },
+  ]), (error) => error.code === "endpoint_response_invalid");
+  assert.throws(() => recipe.reduce([
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "sixty seconds", callType: "Other" } },
+  ]), (error) => error.code === "endpoint_response_invalid");
+
+  const explicitUnbooked = recipe.reduce([
+    { jobNumber: null, leadCall: { direction: "Inbound", duration: "not-required", callType: "Unbooked" } },
+  ]);
+  assert.equal(explicitUnbooked.decimalDenominator, "1", "explicit outcomes do not depend on duration metadata");
 });
 
 test("tranche-1 recipes: membership windows are enforced client-side", () => {

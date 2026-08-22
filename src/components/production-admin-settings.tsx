@@ -17,7 +17,7 @@ import {
   type ProductionAdminSettingsWorkspace,
   type ProductionKpiTarget,
 } from "@/lib/production-admin-settings";
-import { serviceTitanEndpointRecipes } from "@/lib/service-titan-sources";
+import { selectableServiceTitanEndpointRecipes, serviceTitanEndpointRecipes } from "@/lib/service-titan-sources";
 import { ProductionAdditionalDataSources } from "@/components/production-additional-data-sources";
 
 
@@ -51,7 +51,7 @@ function WorkspaceWarnings({ workspace, area }: { workspace: ProductionAdminSett
 
 function CatalogBindingGenerator({ workspace }: { workspace: ProductionAdminSettingsWorkspace }) {
   const [state, action] = useActionState(generateCatalogBindingsAction, INITIAL);
-  const wiredRecipeIds = new Set(serviceTitanEndpointRecipes.map((recipe) => recipe.id));
+  const wiredRecipeIds = new Set(selectableServiceTitanEndpointRecipes.map((recipe) => recipe.id));
   const wiredKpiCount = workspace.kpiDefinitions.filter((definition) => {
     const recipeId = definition.external_source?.endpointRecipeId;
     return typeof recipeId === "string" && wiredRecipeIds.has(recipeId);
@@ -163,8 +163,10 @@ function ReportSourceForm({ tenant }: { tenant: ProductionTenantContext }) {
 
 export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace }) {
   const recipeGroups = new Map<string, EndpointRecipePolicy[]>();
+  const selectableRecipeKeys = new Set(selectableServiceTitanEndpointRecipes.map((recipe) => `${recipe.id}:${recipe.version}`));
   workspace.endpointRecipes.forEach((policy) => {
     const key = `${policy.endpoint_recipe_id}:${policy.endpoint_recipe_version}`;
+    if (!selectableRecipeKeys.has(key)) return;
     recipeGroups.set(key, [...(recipeGroups.get(key) ?? []), policy]);
   });
   const definitionName = new Map(workspace.kpiDefinitions.map((definition) => [definition.id, definition.title]));
