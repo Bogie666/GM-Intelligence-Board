@@ -4,6 +4,7 @@ import {
   formatProductionPeriod,
   formatProductionValue,
   getProductionPriorTrend,
+  getProductionSparklinePoints,
   getSupportedProductionPeriods,
   productionDashboardExportFilename,
   productionPeriodKey,
@@ -19,6 +20,7 @@ function kpi(overrides: Partial<ProductionKpiStatus> = {}): ProductionKpiStatus 
     title: "Revenue",
     section: "executive",
     valueKind: "currency",
+    percentValueScale: "ratio",
     subtitle: "Revenue collected in the selected period.",
     sourceSystem: "ServiceTitan",
     locationId: "location-1",
@@ -71,12 +73,39 @@ describe("production dashboard shaping", () => {
     expect(result.sourceStatus).toContain("No governed observation is available");
   });
 
-  it("formats values and prior movement without fabricating zero-denominator percentages", () => {
+  it("formats percentages across ratio-backed and already-scaled source contracts", () => {
     expect(formatProductionValue(1250, "currency")).toBe("$1,250");
-    expect(formatProductionValue(12.34, "percent")).toBe("12.3%");
+    expect(formatProductionValue(0.7, "percent", "ratio")).toBe("70%");
+    expect(formatProductionValue(0.6666666666666666, "percent", "ratio")).toBe("66.7%");
+    expect(formatProductionValue(70, "percent", "whole")).toBe("70%");
+    expect(formatProductionValue(0.5, "percent", "whole")).toBe("0.5%");
     expect(formatProductionValue(null, "number")).toBe("Unavailable");
     expect(getProductionPriorTrend(kpi())?.changeLabel).toBe("+25.0% vs prior");
     expect(getProductionPriorTrend(kpi({ priorValue: 0 }))?.percentage).toBeNull();
+
+    const ratioTrend = getProductionPriorTrend(kpi({ valueKind: "percent", value: 0.7, priorValue: 0.5 }));
+    expect(ratioTrend?.priorLabel).toBe("50%");
+    expect(ratioTrend?.changeLabel).toBe("+40.0% vs prior");
+    expect(getProductionPriorTrend(kpi({ valueKind: "percent", value: 0.7, priorValue: 0 }))?.changeLabel)
+      .toBe("+70% vs prior");
+  });
+
+  it("normalizes percentage sparkline geometry across source storage contracts", () => {
+    const ratioPoints = getProductionSparklinePoints(kpi({
+      valueKind: "percent",
+      percentValueScale: "ratio",
+      priorValue: 0.5,
+      value: 0.7,
+    }));
+    const wholePoints = getProductionSparklinePoints(kpi({
+      valueKind: "percent",
+      percentValueScale: "whole",
+      priorValue: 50,
+      value: 70,
+    }));
+    expect(ratioPoints).toBe(wholePoints);
+    expect(ratioPoints).toBe("0,32 120,5");
+    expect(getProductionSparklinePoints(kpi({ value: null }))).toBeNull();
   });
 
   it("exports governed fields and neutralizes spreadsheet formulas", () => {
@@ -85,6 +114,29 @@ describe("production dashboard shaping", () => {
     expect(csv).toContain("ServiceTitan");
     expect(csv).toContain("high");
     expect(csv).toContain("Current");
+  });
+
+  it("exports ratio-backed percentage actuals and priors on the 0–100 scale", () => {
+    const csv = createProductionDashboardCsv([{
+      ...kpi({ valueKind: "percent", value: 0.7, priorValue: 0.5 }),
+      periodAvailable: true,
+    }]);
+    expect(csv).toContain("70%,50%,'+40.0% vs prior");
+  });
+
+  it("preserves low already-scaled percentages in trends and CSV exports", () => {
+    const wholePercent = {
+      ...kpi({
+        title: "Low Whole-Scale Rate",
+        valueKind: "percent",
+        percentValueScale: "whole",
+        value: 0.5,
+        priorValue: 0.25,
+      }),
+      periodAvailable: true,
+    };
+    expect(getProductionPriorTrend(wholePercent)?.priorLabel).toBe("0.3%");
+    expect(createProductionDashboardCsv([wholePercent])).toContain("0.5%,0.3%,'+100.0% vs prior");
   });
 
   it("creates a filesystem-safe contextual export filename", () => {

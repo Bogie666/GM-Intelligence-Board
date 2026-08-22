@@ -31,6 +31,7 @@ import {
   formatProductionValue,
   getProductionFreshness,
   getProductionPriorTrend,
+  getProductionSparklinePoints,
   getSupportedProductionPeriods,
   PRODUCTION_DASHBOARD_SECTIONS,
   PRODUCTION_HEALTH_COPY,
@@ -65,12 +66,8 @@ function safePresentationColor(presentation: Record<string, unknown>, key: strin
 }
 
 function Sparkline({ kpi }: { kpi: ProductionDashboardKpi }) {
-  if (kpi.value === null) return <AlertTriangle className="production-kpi-alert" aria-hidden="true" size={28} />;
-  const values = kpi.priorValue === null ? [kpi.value, kpi.value] : [kpi.priorValue, kpi.value];
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = Math.max(max - min, 1);
-  const points = values.map((value, index) => `${index * 120},${32 - ((value - min) / range) * 27}`).join(" ");
+  const points = getProductionSparklinePoints(kpi);
+  if (points === null) return <AlertTriangle className="production-kpi-alert" aria-hidden="true" size={28} />;
   return (
     <svg className={`sparkline sparkline-${healthClass[kpi.health]}`} viewBox="0 0 120 34" aria-label="Current versus prior trend" role="img">
       <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -105,7 +102,7 @@ function KpiCard({ kpi, onOpen }: { kpi: ProductionDashboardKpi; onOpen: () => v
         <span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span>
       </div>
       <div className="metric-main">
-        <div className="metric-value">{formatProductionValue(kpi.value, kpi.valueKind)}</div>
+        <div className="metric-value">{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</div>
         <Sparkline kpi={kpi} />
       </div>
       <div className="metric-subtitle">{kpi.subtitle}</div>
@@ -186,8 +183,8 @@ function InsightDrawer({ kpi, onClose }: { kpi: ProductionDashboardKpi | null; o
           <button className="icon-btn" onClick={onClose} aria-label="Close insight"><X size={20} /></button>
         </div>
         <div className="drawer-kpis">
-          <div><span>Actual</span><strong>{formatProductionValue(kpi.value, kpi.valueKind)}</strong></div>
-          <div><span>Prior</span><strong>{formatProductionValue(kpi.priorValue, kpi.valueKind)}</strong></div>
+          <div><span>Actual</span><strong>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</strong></div>
+          <div><span>Prior</span><strong>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</strong></div>
           <div><span>Change</span><strong>{trend?.changeLabel ?? "Unavailable"}</strong></div>
         </div>
         <div className="drawer-chart"><div className="drawer-section-label">Current versus prior</div><Sparkline kpi={kpi} /></div>
@@ -290,7 +287,7 @@ export function ProductionDashboard({
           <div className="metric-grid">{visibleKpis.map((kpi) => <KpiCard key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} kpi={kpi} onOpen={() => setSelectedKpi(kpi)} />)}</div>
           {visibleKpis.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No KPIs available for this view</h3><p>{canAdminister ? "Complete KPI publication and source binding in Admin Center." : "Ask a tenant administrator to configure this dashboard."}</p>{canAdminister && <Link className="button secondary" href="/admin">Open Admin Center</Link>}</div>}
 
-          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind)}</td><td>{formatProductionValue(kpi.priorValue, kpi.valueKind)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table></div></section>
+          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table></div></section>
           <footer className="page-footer"><span>GM Intelligence Board · Production</span><span>Tenant-scoped observations. Data confidence and freshness are shown by source.</span></footer>
         </section>
       </main>

@@ -5,6 +5,7 @@ vi.mock("@/lib/auth", () => ({ getTenantAuthContext: vi.fn() }));
 
 import { getBusinessUnitMappingReadiness } from "./business-unit-mapping-readiness";
 import {
+  getPercentValueScaleForSourceMethod,
   getTenantReadiness,
   validateBusinessUnitMappingInput,
   validateConnectionCredentialInput,
@@ -135,6 +136,13 @@ describe("tenant control-plane validation", () => {
     const result = validateConnectionInput(input);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.fieldErrors).toHaveProperty(field as string);
+  });
+
+  it("maps governed source methods to explicit percentage storage scales", () => {
+    expect(getPercentValueScaleForSourceMethod("endpoint_recipe")).toBe("ratio");
+    expect(getPercentValueScaleForSourceMethod("saved_report")).toBe("whole");
+    expect(getPercentValueScaleForSourceMethod("custom_endpoint")).toBe("whole");
+    expect(getPercentValueScaleForSourceMethod("domo_dataset")).toBe("whole");
   });
 
   it("validates canonical UUIDs", () => {

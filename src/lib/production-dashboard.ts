@@ -141,6 +141,7 @@ export function shapeProductionDashboardKpis({
 export function formatProductionValue(
   value: number | null,
   kind: ProductionKpiStatus["valueKind"],
+  percentValueScale: ProductionKpiStatus["percentValueScale"] = "whole",
 ): string {
   if (value === null || !Number.isFinite(value)) return "Unavailable";
   if (kind === "currency") {
@@ -150,8 +151,28 @@ export function formatProductionValue(
       maximumFractionDigits: Math.abs(value) >= 1_000 ? 0 : 2,
     }).format(value);
   }
-  if (kind === "percent") return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value)}%`;
+  if (kind === "percent") {
+    const displayValue = percentValueScale === "ratio" ? value * 100 : value;
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(displayValue)}%`;
+  }
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: kind === "ratio" ? 2 : 0 }).format(value);
+}
+
+export function getProductionSparklinePoints(
+  kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "valueKind" | "percentValueScale">,
+): string | null {
+  if (kpi.value === null || !Number.isFinite(kpi.value)) return null;
+  const normalize = (value: number) =>
+    kpi.valueKind === "percent" && kpi.percentValueScale === "ratio" ? value * 100 : value;
+  const currentValue = normalize(kpi.value);
+  const priorValue = kpi.priorValue === null || !Number.isFinite(kpi.priorValue)
+    ? currentValue
+    : normalize(kpi.priorValue);
+  const values = [priorValue, currentValue];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  return values.map((value, index) => `${index * 120},${32 - ((value - min) / range) * 27}`).join(" ");
 }
 
 export interface ProductionPriorTrend {
@@ -161,16 +182,16 @@ export interface ProductionPriorTrend {
   changeLabel: string;
 }
 
-export function getProductionPriorTrend(kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "valueKind">): ProductionPriorTrend | null {
+export function getProductionPriorTrend(kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "valueKind" | "percentValueScale">): ProductionPriorTrend | null {
   if (kpi.value === null || kpi.priorValue === null || !Number.isFinite(kpi.value) || !Number.isFinite(kpi.priorValue)) return null;
   const difference = kpi.value - kpi.priorValue;
   const percentage = kpi.priorValue === 0 ? null : (difference / Math.abs(kpi.priorValue)) * 100;
   return {
     direction: difference > 0 ? "up" : difference < 0 ? "down" : "flat",
     percentage,
-    priorLabel: formatProductionValue(kpi.priorValue, kpi.valueKind),
+    priorLabel: formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale),
     changeLabel: percentage === null
-      ? `${difference > 0 ? "+" : ""}${formatProductionValue(difference, kpi.valueKind)} vs prior`
+      ? `${difference > 0 ? "+" : ""}${formatProductionValue(difference, kpi.valueKind, kpi.percentValueScale)} vs prior`
       : `${percentage > 0 ? "+" : ""}${percentage.toFixed(1)}% vs prior`,
   };
 }
@@ -198,8 +219,8 @@ export function createProductionDashboardCsv(rows: ReadonlyArray<ProductionDashb
     return [
       kpi.title,
       kpi.locationName,
-      formatProductionValue(kpi.value, kpi.valueKind),
-      kpi.priorValue === null ? "Unavailable" : formatProductionValue(kpi.priorValue, kpi.valueKind),
+      formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale),
+      kpi.priorValue === null ? "Unavailable" : formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale),
       trend?.changeLabel ?? "Unavailable",
       formatProductionPeriod(kpi.periodEnd),
       formatProductionDateTime(kpi.observedAt),

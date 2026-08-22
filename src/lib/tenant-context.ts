@@ -214,6 +214,13 @@ export interface TenantReadiness {
   hasValidatedConnection: boolean;
 }
 
+export type GovernedKpiSourceMethod = "endpoint_recipe" | "saved_report" | "custom_endpoint" | "domo_dataset";
+export type PercentValueScale = "ratio" | "whole";
+
+export function getPercentValueScaleForSourceMethod(sourceMethod: GovernedKpiSourceMethod): PercentValueScale {
+  return sourceMethod === "endpoint_recipe" ? "ratio" : "whole";
+}
+
 export interface ProductionKpiStatus {
   bindingId: string | null;
   definitionId: string | null;
@@ -221,6 +228,8 @@ export interface ProductionKpiStatus {
   title: string;
   section: "executive" | "revenue" | "calls" | "appointments" | "sales" | "membership";
   valueKind: "currency" | "number" | "percent" | "ratio";
+  /** Endpoint recipes persist ratio values; other governed source contracts persist display-scale percentages. */
+  percentValueScale: PercentValueScale;
   subtitle: string;
   sourceSystem: OriginalKpiCatalogItem["source_system"];
   locationId: string | null;
@@ -534,7 +543,7 @@ async function loadProductionKpis(
       .select("id, kpi_key, title, section, value_kind, stale_after_hours, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, refresh_interval, canonical_source_fingerprint")
+      .select("id, kpi_definition_id, location_id, source_method, refresh_interval, canonical_source_fingerprint")
       .eq("organization_id", organizationId).eq("approval_status", "approved"),
   ]);
   if (catalogResult.error || definitionsResult.error || bindingsResult.error) return null;
@@ -550,7 +559,9 @@ async function loadProductionKpis(
     external_source: Record<string, unknown>;
   }>;
   const bindings = bindingsResult.data as Array<{
-    id: string; kpi_definition_id: string; location_id: string; refresh_interval: string | null;
+    id: string; kpi_definition_id: string; location_id: string;
+    source_method: GovernedKpiSourceMethod;
+    refresh_interval: string | null;
     canonical_source_fingerprint: string | null;
   }>;
   const observationResults = await Promise.all(bindings.map((binding) => {
@@ -593,6 +604,7 @@ async function loadProductionKpis(
       const catalogPresentation = {
         subtitle: catalogItem.subtitle,
         sourceSystem: catalogItem.source_system,
+        percentValueScale: "whole" as const,
       };
       if (!definition) return [{
         bindingId: null, definitionId: null, kpiKey: catalogItem.kpi_key, title: catalogItem.title,
@@ -614,7 +626,9 @@ async function loadProductionKpis(
           .filter((candidate) => candidate.source_fingerprint === binding.canonical_source_fingerprint);
         const common = {
           bindingId: binding.id, definitionId: definition.id, kpiKey: definition.kpi_key, title: definition.title,
-          section: definition.section, valueKind: definition.value_kind, ...catalogPresentation, locationId: location.id,
+          section: definition.section, valueKind: definition.value_kind, ...catalogPresentation,
+          percentValueScale: getPercentValueScaleForSourceMethod(binding.source_method),
+          locationId: location.id,
           locationName: location.display_name,
           sourceStatus: binding.canonical_source_fingerprint ? "Approved governed source" : "Source fingerprint required",
         };
