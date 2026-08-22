@@ -55,6 +55,19 @@ describe("governed ServiceTitan sources", () => {
       .toEqual([3]);
   });
 
+  it("retires membership event v1 recipes while retaining historical lineage", () => {
+    for (const id of ["new-memberships", "canceled-memberships", "membership-net-growth"]) {
+      expect(serviceTitanEndpointRecipes
+        .filter((recipe) => recipe.id === id)
+        .map((recipe) => [recipe.version, recipe.retired === true]))
+        .toEqual([[1, true], [2, false]]);
+      expect(selectableServiceTitanEndpointRecipes
+        .filter((recipe) => recipe.id === id)
+        .map((recipe) => recipe.version))
+        .toEqual([2]);
+    }
+  });
+
   it("rejects duplicate report IDs for one connection and requires numeric fields", () => {
     const connections = createSeedConnectionStore().connections;
     const existing = createSeedServiceTitanSourceStore().reports;

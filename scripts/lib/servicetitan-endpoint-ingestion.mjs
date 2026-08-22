@@ -420,6 +420,20 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
     ],
     reduce: (items) => reducedResult(new Decimal(items.length)),
   },
+  "new-memberships@2": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    // ServiceTitan exposes no membership-start-date query filter. Fetch the
+    // bounded full inventory, then apply the governed local-date window.
+    query: () => [],
+    reduce: (items, period, options) => {
+      const timeZone = validatedMembershipTimeZone(options?.timeZone);
+      return reducedResult(new Decimal(
+        items.filter((item) => membershipDateWithinPeriod(item.from, period, timeZone, "Membership start date")).length,
+      ));
+    },
+  },
   "canceled-memberships@1": {
     category: "memberships",
     supportsBusinessUnitFilter: true,
@@ -432,6 +446,21 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       items.filter((item) => timestampWithinPeriod(item.cancellationDate, period)).length,
     )),
   },
+  "canceled-memberships@2": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    // Natural expirations may not modify the record during the observed month.
+    query: () => [],
+    reduce: (items, period, options) => {
+      const timeZone = validatedMembershipTimeZone(options?.timeZone);
+      return reducedResult(new Decimal(
+        items.filter((item) => membershipDateWithinPeriod(
+          effectiveMembershipEndDate(item), period, timeZone, "Membership effective end date",
+        )).length,
+      ));
+    },
+  },
   "membership-net-growth@1": {
     category: "memberships",
     supportsBusinessUnitFilter: true,
@@ -443,6 +472,24 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       const canceled = items.filter((item) =>
         statusName(item).toLowerCase() === "canceled" && timestampWithinPeriod(effectiveEnd(item), period)).length;
       return reducedResult(new Decimal(created).minus(new Decimal(canceled)));
+    },
+  },
+  "membership-net-growth@2": {
+    category: "memberships",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: () => [],
+    reduce: (items, period, options) => {
+      const timeZone = validatedMembershipTimeZone(options?.timeZone);
+      const started = items.filter((item) =>
+        membershipDateWithinPeriod(item.from, period, timeZone, "Membership start date")).length;
+      const ended = items.filter((item) => membershipDateWithinPeriod(
+        effectiveMembershipEndDate(item), period, timeZone, "Membership effective end date",
+      )).length;
+      return {
+        ...reducedResult(new Decimal(started).minus(new Decimal(ended))),
+        metricComponents: { newMemberships: started, effectiveEnds: ended },
+      };
     },
   },
   "sold-estimates-value@1": {
@@ -510,6 +557,81 @@ function timestampWithinPeriod(value, period) {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return false;
   return time >= period.start.getTime() && time < period.end.getTime();
+}
+
+function membershipCalendarDate(value, label) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") fail("endpoint_response_invalid", `${label} must be an ISO calendar date.`);
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?$/.exec(value.trim());
+  if (!match || match[1] === "0001") {
+    if (match?.[1] === "0001") return null;
+    fail("endpoint_response_invalid", `${label} must be an ISO calendar date.`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() + 1 !== month || probe.getUTCDate() !== day) {
+    fail("endpoint_response_invalid", `${label} must be a valid calendar date.`);
+  }
+  return { year, month, day, key: `${match[1]}-${match[2]}-${match[3]}` };
+}
+
+function zonedDateParts(instant, timeZone) {
+  if (typeof timeZone !== "string" || timeZone.trim() === "") {
+    fail("endpoint_timezone_invalid", "Membership event recipes require the bound location timezone.");
+  }
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(instant);
+  } catch {
+    fail("endpoint_timezone_invalid", "Membership event recipes require a valid bound location timezone.");
+  }
+  const result = {};
+  for (const part of parts) if (part.type !== "literal") result[part.type] = Number(part.value);
+  return result;
+}
+
+function validatedMembershipTimeZone(timeZone) {
+  zonedDateParts(new Date(0), timeZone);
+  return timeZone;
+}
+
+/** Converts a membership's date-only local event date to its exact UTC midnight. */
+function membershipDateToUtc(value, timeZone, label) {
+  const date = membershipCalendarDate(value, label);
+  if (!date) return null;
+  let guess = Date.UTC(date.year, date.month - 1, date.day, 0, 0, 0, 0);
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const observed = zonedDateParts(new Date(guess), timeZone);
+    const observedAsUtc = Date.UTC(
+      observed.year, observed.month - 1, observed.day,
+      observed.hour, observed.minute, observed.second, 0,
+    );
+    const target = Date.UTC(date.year, date.month - 1, date.day, 0, 0, 0, 0);
+    const difference = target - observedAsUtc;
+    if (difference === 0) return new Date(guess);
+    guess += difference;
+  }
+  return new Date(guess);
+}
+
+function membershipDateWithinPeriod(value, period, timeZone, label) {
+  const event = membershipDateToUtc(value, timeZone, label);
+  return event !== null && event.getTime() >= period.start.getTime() && event.getTime() < period.end.getTime();
+}
+
+function effectiveMembershipEndDate(item) {
+  const cancel = membershipCalendarDate(item.cancellationDate, "Membership cancellation date");
+  const expire = membershipCalendarDate(item.to, "Membership expiration date");
+  if (!cancel) return expire?.key ?? null;
+  if (!expire) return cancel.key;
+  return cancel.key < expire.key ? cancel.key : expire.key;
 }
 
 function hasJobNumber(item) {

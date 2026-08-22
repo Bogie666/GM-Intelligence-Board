@@ -52,11 +52,11 @@ test("every migration-owned recipe version has an execution contract and categor
   assert.deepEqual(
     Object.keys(ENDPOINT_RECIPE_EXECUTIONS).sort(),
     [
-      "active-memberships@1", "average-invoice-ticket@1", "average-invoice-ticket@2", "canceled-memberships@1",
+      "active-memberships@1", "average-invoice-ticket@1", "average-invoice-ticket@2", "canceled-memberships@1", "canceled-memberships@2",
       "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1", "completed-revenue@2",
       "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-call-booking-rate@3", "inbound-calls-booked@1",
       "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
-      "membership-net-growth@1", "new-memberships@1", "sales-close-rate@1", "sales-close-rate@2",
+      "membership-net-growth@1", "membership-net-growth@2", "new-memberships@1", "new-memberships@2", "sales-close-rate@1", "sales-close-rate@2",
       "sold-estimates-value@1",
     ],
   );
@@ -551,6 +551,62 @@ test("tranche-1 recipes: membership windows are enforced client-side", () => {
   assert.equal(canceled.reduce(members, period).decimalValue, "2"); // only in-period cancellations
   const net = getEndpointRecipeExecution("membership-net-growth", 1);
   assert.equal(net.reduce(members, period).decimalValue, "0"); // 2 created - 2 canceled
+});
+
+test("membership v2 recipes use timezone-aware start and effective-end events through period end", () => {
+  const period = { start: new Date("2026-08-01T05:00:00Z"), end: new Date("2026-08-22T19:19:00Z") };
+  const options = { timeZone: "America/Chicago" };
+  const members = [
+    // Starts on local August 1; UTC interpretation must not drop it before 05:00Z.
+    { from: "2026-08-01", to: "2027-07-31", status: "Active" },
+    { from: "2026-08-22T00:00:00", to: "2027-08-21", status: "Active" },
+    // Future local start must not be counted MTD.
+    { from: "2026-08-23", to: "2027-08-22", status: "Active" },
+    // Created this month but started earlier: not a new-membership event.
+    { createdOn: "2026-08-05T12:00:00Z", from: "2026-07-15", to: "2027-07-14", status: "Active" },
+    // Cancellation event.
+    { from: "2026-01-01", cancellationDate: "2026-08-10", to: "2026-12-31", status: "Canceled" },
+    // Natural expiration counts even when status is Expired rather than Canceled.
+    { from: "2025-08-15", cancellationDate: null, to: "2026-08-15", status: "Expired" },
+    // Earliest effective end wins, regardless of current status.
+    { from: "2025-08-18", cancellationDate: "2026-08-18", to: "2026-08-30", status: "Active" },
+    // Future end date must not be counted MTD.
+    { from: "2025-08-30", cancellationDate: null, to: "2026-08-30", status: "Active" },
+  ];
+
+  const created = getEndpointRecipeExecution("new-memberships", 2);
+  const canceled = getEndpointRecipeExecution("canceled-memberships", 2);
+  const net = getEndpointRecipeExecution("membership-net-growth", 2);
+  assert.deepEqual(created.query(period), []);
+  assert.deepEqual(canceled.query(period), []);
+  assert.deepEqual(net.query(period), []);
+  assert.equal(created.reduce(members, period, options).decimalValue, "2");
+  assert.equal(canceled.reduce(members, period, options).decimalValue, "3");
+  assert.deepEqual(net.reduce(members, period, options), {
+    decimalValue: "-1",
+    decimalNumerator: null,
+    decimalDenominator: null,
+    metricComponents: { newMemberships: 2, effectiveEnds: 3 },
+  });
+});
+
+test("membership v2 recipes fail closed on missing timezone or malformed event dates", () => {
+  const period = { start: new Date("2026-08-01T05:00:00Z"), end: new Date("2026-08-22T19:19:00Z") };
+  const created = getEndpointRecipeExecution("new-memberships", 2);
+  assert.throws(
+    () => created.reduce([{ from: "2026-08-10" }], period, {}),
+    (error) => error.code === "endpoint_timezone_invalid",
+  );
+  assert.throws(
+    () => created.reduce([{ from: "2026-02-30" }], period, { timeZone: "America/Chicago" }),
+    (error) => error.code === "endpoint_response_invalid",
+  );
+  for (const malformed of ["2026-08-10garbage", "2026-08-10T99:99:99Z", "0001-01-01garbage"]) {
+    assert.throws(
+      () => created.reduce([{ from: malformed }], period, { timeZone: "America/Chicago" }),
+      (error) => error.code === "endpoint_response_invalid",
+    );
+  }
 });
 
 test("tranche-1 recipes: sold estimates sum subtotals of sold status only", () => {

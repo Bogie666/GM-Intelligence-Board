@@ -318,7 +318,7 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
       recipeVersion: binding.endpoint_recipe_version,
       businessUnitMappings: binding.business_unit_mappings,
       period,
-      options: { parameterValues: binding.parameter_values ?? {} },
+      options: { parameterValues: binding.parameter_values ?? {}, timeZone: binding.location_timezone },
     });
     const written = await writeObservation(supabase, {
       binding,
@@ -327,7 +327,13 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
       idempotencyKey,
       method: "endpoint-recipe",
       recipeVersion: binding.endpoint_recipe_version,
-      extraMetadata: { recipeId: binding.endpoint_recipe_id, recipeVersion: binding.endpoint_recipe_version, pageCount: reduced.pageCount, totalRowCount: reduced.totalRowCount },
+      extraMetadata: {
+        recipeId: binding.endpoint_recipe_id,
+        recipeVersion: binding.endpoint_recipe_version,
+        pageCount: reduced.pageCount,
+        totalRowCount: reduced.totalRowCount,
+        ...(reduced.metricComponents ? { metricComponents: reduced.metricComponents } : {}),
+      },
     });
     await closeRun(supabase, runId, { status: "completed", rowCount: reduced.rowCount, pageCount: reduced.pageCount });
     return { outcome: written ? "materialized" : "skipped-concurrent" };

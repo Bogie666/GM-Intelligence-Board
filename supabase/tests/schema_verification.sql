@@ -319,9 +319,9 @@ begin
            ('booking-rate', 'inbound-call-booking-rate', 3),
            ('ytd-revenue', 'completed-revenue', 1),
            ('inbound-calls', 'inbound-calls-count', 1),
-           ('new-members', 'new-memberships', 1),
-           ('member-cancels', 'canceled-memberships', 1),
-           ('membership-net', 'membership-net-growth', 1),
+           ('new-members', 'new-memberships', 2),
+           ('member-cancels', 'canceled-memberships', 2),
+           ('membership-net', 'membership-net-growth', 2),
            ('pipeline', 'sold-estimates-value', 1),
            ('hvac-sales-appts', 'jobs-with-appointments-count', 1),
            ('plumbing-appts', 'jobs-with-appointments-count', 1)
@@ -469,7 +469,7 @@ begin
     into release_ready, release_marker
   from public.get_tranche1_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260821000100_tranche1_catalog_recipes' then
+     or release_marker is distinct from '20260822000200_membership_event_recipes_v2' then
     raise exception 'tranche1 release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
   select readiness.ready, readiness.release_marker
@@ -478,6 +478,13 @@ begin
   if release_ready is distinct from true
      or release_marker is distinct from '20260822000100_qualified_call_booking_rate_v3' then
     raise exception 'booking-rate v3 release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
+  end if;
+  select readiness.ready, readiness.release_marker
+    into release_ready, release_marker
+  from public.get_membership_event_v2_release_readiness() readiness;
+  if release_ready is distinct from true
+     or release_marker is distinct from '20260822000200_membership_event_recipes_v2' then
+    raise exception 'membership-event v2 release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
   select readiness.ready, readiness.release_marker
     into release_ready, release_marker
@@ -501,7 +508,8 @@ begin
       'public.get_catalog_binding_release_readiness()'::pg_catalog.regprocedure,
       'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
       'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure
+      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_membership_event_v2_release_readiness()'::pg_catalog.regprocedure
     );
   if unexpected_anon_function_count <> 0 then
     raise exception 'anon can execute % unexpected public functions', unexpected_anon_function_count;
@@ -555,7 +563,8 @@ begin
       'public.generate_catalog_recipe_bindings(uuid)'::pg_catalog.regprocedure,
       'public.get_observation_window_release_readiness()'::pg_catalog.regprocedure,
       'public.get_tranche1_release_readiness()'::pg_catalog.regprocedure,
-      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure
+      'public.get_booking_rate_v3_release_readiness()'::pg_catalog.regprocedure,
+      'public.get_membership_event_v2_release_readiness()'::pg_catalog.regprocedure
     ]));
   if unexpected_authenticated_function_count <> 0 then
     raise exception 'authenticated can execute % unexpected public functions', unexpected_authenticated_function_count;

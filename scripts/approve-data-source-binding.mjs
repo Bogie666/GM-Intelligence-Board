@@ -15,6 +15,7 @@ import {
 } from "./lib/servicetitan-endpoint-ingestion.mjs";
 import { executeDomoDatasetSource, parseDomoCredentialPayload } from "./lib/domo-dataset.mjs";
 import { parseCredentialPayload, parsePeriod, WorkerInputError } from "./lib/servicetitan-report.mjs";
+import { deriveObservationPeriod } from "./run-data-source-ingestion.mjs";
 
 Decimal.set({ precision: 50, rounding: Decimal.ROUND_HALF_UP, toExpNeg: -40, toExpPos: 80 });
 
@@ -86,6 +87,27 @@ async function exactSingle(query, code, message) {
   return data;
 }
 
+export function assertGovernedApprovalPeriod(binding, timeZone, period) {
+  let governed;
+  try {
+    governed = deriveObservationPeriod({
+      observation_window: binding.observation_window,
+      refresh_interval: binding.refresh_interval,
+      location_timezone: timeZone,
+    }, period.end);
+  } catch {
+    throw new WorkerInputError("period-contract-invalid", "The binding observation period contract is invalid.");
+  }
+  if (governed.start.getTime() !== period.start.getTime()
+      || governed.end.getTime() !== period.end.getTime()) {
+    throw new WorkerInputError(
+      "period-contract-mismatch",
+      "The governance sample period must exactly match the binding observation window and location timezone.",
+    );
+  }
+  return governed;
+}
+
 async function resolveServiceTitanCredentials(supabase, organizationId, connectionId) {
   const { data, error } = await supabase.rpc("resolve_service_titan_connection_secret", {
     p_organization_id: organizationId,
@@ -136,7 +158,7 @@ export async function governBinding(args, dependencies = {}) {
   const supabase = dependencies.supabase ?? serviceRoleClient();
   const binding = await exactSingle(
     supabase.from("custom_kpi_location_bindings")
-      .select("id,organization_id,kpi_definition_id,location_id,connection_id,service_titan_tenant_id,source_method,endpoint_recipe_id,endpoint_recipe_version,custom_endpoint_source_id,domo_connection_id,domo_dataset_source_id,business_unit_mappings,approval_status")
+      .select("id,organization_id,kpi_definition_id,location_id,connection_id,service_titan_tenant_id,source_method,endpoint_recipe_id,endpoint_recipe_version,custom_endpoint_source_id,domo_connection_id,domo_dataset_source_id,business_unit_mappings,approval_status,observation_window,refresh_interval")
       .eq("organization_id", organizationId).eq("id", bindingId),
     "binding-unavailable", "The exact KPI binding is unavailable.",
   );
@@ -176,6 +198,12 @@ export async function governBinding(args, dependencies = {}) {
     const credentials = await (dependencies.resolveServiceTitanCredentials ?? resolveServiceTitanCredentials)(supabase, organizationId, connection.id);
 
     if (binding.source_method === "endpoint_recipe") {
+      const location = await exactSingle(
+        supabase.from("locations").select("id,organization_id,timezone")
+          .eq("organization_id", organizationId).eq("id", binding.location_id),
+        "location-unavailable", "The exact binding location timezone is unavailable.",
+      );
+      assertGovernedApprovalPeriod(binding, location.timezone, period);
       sample = await (dependencies.executeEndpointRecipe ?? executeEndpointRecipe)({
         credentials,
         environment: connection.environment,
@@ -184,7 +212,7 @@ export async function governBinding(args, dependencies = {}) {
         recipeVersion: binding.endpoint_recipe_version,
         businessUnitMappings: binding.business_unit_mappings,
         period,
-        options: dependencies.executionOptions,
+        options: { ...(dependencies.executionOptions ?? {}), timeZone: location.timezone },
       });
       rpcName = "approve_service_titan_endpoint_binding";
       rpcArgs = {
