@@ -236,7 +236,7 @@ async function priorValue(supabase, organizationId, bindingId, sourceFingerprint
   return data?.value ?? null;
 }
 
-async function writeObservation(supabase, { binding, period, reduced, idempotencyKey, method, extraMetadata = {} }) {
+async function writeObservation(supabase, { binding, period, reduced, idempotencyKey, method, recipeVersion, extraMetadata = {} }) {
   const prior = await priorValue(supabase, binding.organization_id, binding.binding_id, binding.canonical_source_fingerprint, period.start);
   const { error } = await supabase.from("kpi_observations").insert({
     organization_id: binding.organization_id,
@@ -244,7 +244,7 @@ async function writeObservation(supabase, { binding, period, reduced, idempotenc
     kpi_definition_id: binding.kpi_definition_id,
     location_id: binding.location_id,
     source_fingerprint: binding.canonical_source_fingerprint,
-    source_version: 1,
+    source_version: recipeVersion,
     period_start: period.start.toISOString(),
     period_end: period.end.toISOString(),
     observed_at: new Date().toISOString(),
@@ -326,6 +326,7 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
       reduced,
       idempotencyKey,
       method: "endpoint-recipe",
+      recipeVersion: binding.endpoint_recipe_version,
       extraMetadata: { recipeId: binding.endpoint_recipe_id, recipeVersion: binding.endpoint_recipe_version, pageCount: reduced.pageCount, totalRowCount: reduced.totalRowCount },
     });
     await closeRun(supabase, runId, { status: "completed", rowCount: reduced.rowCount, pageCount: reduced.pageCount });
@@ -377,6 +378,7 @@ async function processCustomEndpointBinding(supabase, binding, dryRun) {
       reduced,
       idempotencyKey,
       method: "custom-endpoint",
+      recipeVersion: 1,
       extraMetadata: { customEndpointSourceId: source.id, endpointCategory: source.category, pageCount: reduced.pageCount, totalRowCount: reduced.totalRowCount },
     });
     await closeRun(supabase, runId, { status: "completed", rowCount: reduced.rowCount, pageCount: reduced.pageCount });
@@ -426,6 +428,7 @@ async function processDomoBinding(supabase, binding, dryRun) {
       reduced,
       idempotencyKey,
       method: "domo-dataset",
+      recipeVersion: 1,
       extraMetadata: { domoDatasetSourceId: source.id },
     });
     const { error: statusError } = await supabase.rpc("set_domo_connection_status", {
