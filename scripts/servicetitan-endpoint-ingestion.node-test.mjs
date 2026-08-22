@@ -52,19 +52,19 @@ test("every migration-owned recipe version has an execution contract and categor
   assert.deepEqual(
     Object.keys(ENDPOINT_RECIPE_EXECUTIONS).sort(),
     [
-      "active-memberships@1", "average-invoice-ticket@1", "canceled-memberships@1",
-      "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1",
+      "active-memberships@1", "average-invoice-ticket@1", "average-invoice-ticket@2", "canceled-memberships@1",
+      "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1", "completed-revenue@2",
       "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-calls-booked@1",
       "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
-      "membership-net-growth@1", "new-memberships@1", "sales-close-rate@1",
+      "membership-net-growth@1", "new-memberships@1", "sales-close-rate@1", "sales-close-rate@2",
       "sold-estimates-value@1",
     ],
   );
 });
 
 test("unknown recipes fail closed", () => {
-  assert.throws(() => getEndpointRecipeExecution("unknown", 1), EndpointIngestionError);
-  assert.throws(() => getEndpointRecipeExecution("completed-revenue", 2), EndpointIngestionError);
+  assert.throws(() => getEndpointRecipeExecution("unknown", 2), EndpointIngestionError);
+  assert.throws(() => getEndpointRecipeExecution("completed-revenue", 3), EndpointIngestionError);
 });
 
 test("endpoint query builder resolves placeholders and rejects unsafe parameters", () => {
@@ -496,7 +496,7 @@ test("tranche-1 recipes: inbound calls and booking rate v2 use job-number semant
   assert.equal(countRecipe.reduce(calls).decimalValue, "3"); // abandoned excluded
   const rate = getEndpointRecipeExecution("inbound-call-booking-rate", 2).reduce(calls);
   assert.equal(rate.decimalNumerator, "2");   // two calls carry job numbers
-  assert.equal(rate.decimalDenominator, "3"); // abandoned excluded
+  assert.equal(rate.decimalDenominator, "4"); // total inbound (abandoned included)
 });
 
 test("tranche-1 recipes: membership windows are enforced client-side", () => {
@@ -530,4 +530,36 @@ test("tranche-1 recipes: appointment-window jobs use period-bounded query filter
   assert.equal(query.appointmentStartsOnOrAfter, "2026-08-20T05:00:00.000Z");
   assert.equal(query.appointmentStartsBefore, "2026-08-21T05:00:00.000Z");
   assert.equal(recipe.reduce([{}, {}, {}]).decimalValue, "3");
+});
+
+test("sales-close-rate@2: groups estimates by jobId, applies sold threshold", () => {
+  const estimates = [
+    // Job A: two Sold estimates, one above threshold → closed
+    { jobId: 1001, status: { name: "Sold" }, subtotal: "85.0" },
+    { jobId: 1001, status: { name: "Sold" }, subtotal: "2000.0" },
+    // Job B: one Sold estimate below threshold → not closed
+    { jobId: 1002, status: { name: "Sold" }, subtotal: "0.50" },
+    // Job C: only Open → opportunity but not closed
+    { jobId: 1003, status: { name: "Open" }, subtotal: "500.0" },
+    // Job D: one Sold above threshold → closed
+    { jobId: 1004, status: { name: "Sold" }, subtotal: "50.0" },
+    // estimate with no jobId → ignored
+    { status: { name: "Sold" }, subtotal: "100.0" },
+  ];
+  const recipe = getEndpointRecipeExecution("sales-close-rate", 2);
+  const result = recipe.reduce(estimates, null, { parameterValues: { soldThreshold: "1.0" } });
+  assert.equal(result.decimalNumerator, "2");  // Job 1001 and 1004 are closed
+  assert.equal(result.decimalDenominator, "4"); // Jobs 1001, 1002, 1003, 1004 are opportunities
+  assert.equal(result.decimalValue, "0.5");     // 2/4 = 50%
+});
+
+test("sales-close-rate@2: fails closed on invalid soldThreshold", () => {
+  const recipe = getEndpointRecipeExecution("sales-close-rate", 2);
+  assert.throws(() => recipe.reduce([], null, { parameterValues: { soldThreshold: "-1" } }), EndpointIngestionError);
+  assert.throws(() => recipe.reduce([], null, { parameterValues: { soldThreshold: "not-a-number" } }), EndpointIngestionError);
+});
+
+test("sales-close-rate@2: empty estimates fails denominator zero", () => {
+  const recipe = getEndpointRecipeExecution("sales-close-rate", 2);
+  assert.throws(() => recipe.reduce([], null, {}), EndpointIngestionError);
 });

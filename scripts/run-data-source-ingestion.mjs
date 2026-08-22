@@ -318,6 +318,7 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
       recipeVersion: binding.endpoint_recipe_version,
       businessUnitMappings: binding.business_unit_mappings,
       period,
+      options: { parameterValues: binding.parameter_values ?? {} },
     });
     const written = await writeObservation(supabase, {
       binding,

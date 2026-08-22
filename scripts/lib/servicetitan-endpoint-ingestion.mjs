@@ -216,6 +216,20 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       return reducedResult(total);
     },
   },
+  "completed-revenue@2": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["completedOnOrAfter", period.start.toISOString()],
+      ["completedBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      let total = new Decimal(0);
+      for (const item of items) total = total.plus(toDecimal(item.total ?? "0", "Job total"));
+      return reducedResult(total);
+    },
+  },
   "completed-appointments@1": {
     category: "appointments",
     supportsBusinessUnitFilter: false,
@@ -237,6 +251,36 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
     reduce: (items) => {
       const sold = items.filter((item) => statusName(item).toLowerCase() === "sold").length;
       return ratioResult(new Decimal(sold), new Decimal(items.length));
+    },
+  },
+  "sales-close-rate@2": {
+    category: "estimates",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+    ],
+    reduce: (items, period, options) => {
+      // Sold Threshold from binding parameter_values, default $1 (industry standard minimum)
+      const threshold = parseFloat(options?.parameterValues?.soldThreshold ?? "1.0");
+      if (!Number.isFinite(threshold) || threshold < 0) fail("parameter_invalid", "soldThreshold must be a non-negative number.");
+      // Group estimates by jobId — each unique job = one sales opportunity
+      const opportunities = new Map();
+      for (const item of items) {
+        if (!item.jobId) continue;
+        if (!opportunities.has(item.jobId)) opportunities.set(item.jobId, []);
+        opportunities.get(item.jobId).push(item);
+      }
+      // Closed = opportunity with at least one Sold estimate exceeding threshold
+      let closed = 0;
+      for (const [, estimates] of opportunities) {
+        const soldAbove = estimates.some((e) =>
+          statusName(e).toLowerCase() === "sold" && parseFloat(e.subtotal ?? "0") > threshold
+        );
+        if (soldAbove) closed++;
+      }
+      return ratioResult(new Decimal(closed), new Decimal(opportunities.size));
     },
   },
   "active-memberships@1": {
@@ -290,6 +334,22 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       return ratioResult(total, new Decimal(items.length));
     },
   },
+  "average-invoice-ticket@2": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["completedOnOrAfter", period.start.toISOString()],
+      ["completedBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      const revenueJobs = items.filter((item) => parseFloat(item.total ?? "0") > 0);
+      if (revenueJobs.length === 0) fail("endpoint_denominator_zero", "No jobs with revenue in this period.");
+      let total = new Decimal(0);
+      for (const item of revenueJobs) total = total.plus(toDecimal(item.total, "Job total"));
+      return ratioResult(total, new Decimal(revenueJobs.length));
+    },
+  },
   "inbound-calls-booked@1": {
     category: "calls",
     supportsBusinessUnitFilter: false,
@@ -325,9 +385,8 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       ["direction", "Inbound"],
     ],
     reduce: (items) => {
-      const qualified = items.filter((item) => !isAbandonedCall(item));
-      const booked = qualified.filter((item) => hasJobNumber(item));
-      return ratioResult(new Decimal(booked.length), new Decimal(qualified.length));
+      const booked = items.filter((item) => hasJobNumber(item));
+      return ratioResult(new Decimal(booked.length), new Decimal(items.length));
     },
   },
   "new-memberships@1": {
@@ -359,8 +418,9 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
     query: (period) => [["modifiedOnOrAfter", period.start.toISOString()]],
     reduce: (items, period) => {
       const created = items.filter((item) => timestampWithinPeriod(item.createdOn, period)).length;
+      // effectiveEnd = earliest(cancellationDate, expiration "to" date) — matches Lex KPI
       const canceled = items.filter((item) =>
-        statusName(item).toLowerCase() === "canceled" && timestampWithinPeriod(item.cancellationDate, period)).length;
+        statusName(item).toLowerCase() === "canceled" && timestampWithinPeriod(effectiveEnd(item), period)).length;
       return reducedResult(new Decimal(created).minus(new Decimal(canceled)));
     },
   },
@@ -413,6 +473,16 @@ function isAbandonedCall(item) {
   return typeof item.callType === "string" && item.callType.toLowerCase() === "abandoned";
 }
 
+/** Earliest end date (cancellation or expiration). null = still open. Matches Lex KPI effectiveEnd. */
+function effectiveEnd(item) {
+  const cancel = typeof item.cancellationDate === "string" ? item.cancellationDate.trim() : "";
+  const expire = typeof item.to === "string" ? item.to.trim() : "";
+  if (!cancel && !expire) return "";
+  if (!cancel) return expire;
+  if (!expire) return cancel;
+  return cancel < expire ? cancel : expire;
+}
+
 /** True when the ISO-ish timestamp falls inside [period.start, period.end). */
 function timestampWithinPeriod(value, period) {
   if (typeof value !== "string" || value.trim() === "") return false;
@@ -462,7 +532,7 @@ export async function executeEndpointRecipe({
   const filtered = includedIds
     ? items.filter((item) => matchesBusinessUnit(item, includedIds, execution.businessUnitField))
     : items;
-  return { ...execution.reduce(filtered, period), rowCount: filtered.length, totalRowCount: items.length, pageCount };
+  return { ...execution.reduce(filtered, period, options), rowCount: filtered.length, totalRowCount: items.length, pageCount };
 }
 
 /** Validates that every custom endpoint observation is bound to its worker period. */
