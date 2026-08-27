@@ -26,6 +26,7 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import type { TenantAccessOption } from "@/lib/auth";
 import {
+  createExecutiveScorecardCsv,
   createProductionDashboardCsv,
   formatProductionPeriod,
   formatProductionValue,
@@ -36,10 +37,12 @@ import {
   PRODUCTION_DASHBOARD_SECTIONS,
   PRODUCTION_HEALTH_COPY,
   productionDashboardExportFilename,
+  shapeExecutiveScorecard,
   shapeProductionDashboardKpis,
+  type ExecutiveScorecardCard,
   type ProductionDashboardKpi,
 } from "@/lib/production-dashboard";
-import type { ProductionKpiStatus, TenantLocation } from "@/lib/tenant-context";
+import type { ProductionKpiBudget, ProductionKpiStatus, TenantLocation } from "@/lib/tenant-context";
 
 const sectionIcons = {
   executive: LayoutDashboard,
@@ -65,13 +68,33 @@ function safePresentationColor(presentation: Record<string, unknown>, key: strin
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }
 
-function Sparkline({ kpi }: { kpi: ProductionDashboardKpi }) {
+function Sparkline({ kpi }: { kpi: ProductionKpiStatus }) {
   const points = getProductionSparklinePoints(kpi);
   if (points === null) return <AlertTriangle className="production-kpi-alert" aria-hidden="true" size={28} />;
   return (
     <svg className={`sparkline sparkline-${healthClass[kpi.health]}`} viewBox="0 0 120 34" aria-label="Current versus prior trend" role="img">
       <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard; onOpen: () => void }) {
+  const dataClass = card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical";
+  const performanceClass = card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral";
+  return (
+    <article className={`metric-card executive-scorecard-card status-${dataClass}`}>
+      <div className="metric-card-topline" />
+      <div className="metric-head">
+        <div><div className="metric-label">{card.title}</div><div className="source-label"><span className="source-dot" />{card.source.sourceSystem}</div></div>
+        <div className="executive-statuses"><span className={`status-pill ${performanceClass}`}>Performance: {card.performanceStatus}</span><span className={`status-pill ${dataClass}`}>Data: {card.dataStatus}</span></div>
+      </div>
+      <div className="metric-main"><div className="metric-value">{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</div></div>
+      <div className="metric-subtitle">{card.comparisonValue === null || !card.comparisonLabel ? card.subtitle : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel}`}</div>
+      <div className="executive-facts">{card.facts.map((fact) => <div key={fact.label}><span>{fact.label}</span><strong>{fact.value}</strong></div>)}</div>
+      <div className="production-period-label">{card.periodLabel}{card.asOf ? " · local as-of" : ""}</div>
+      <p className="executive-data-message">{card.performanceStatus === "Not assessed" && (card.id === "revenue-mtd" || card.id === "run-rate-forecast") && !card.budgetLineage ? "No published budget; performance not assessed. " : ""}{card.dataMessage}</p>
+      <button className="executive-card-action" type="button" onClick={onOpen} aria-label={`Open ${card.title} insight`}>View insight <span aria-hidden="true">→</span></button>
+    </article>
   );
 }
 
@@ -115,7 +138,7 @@ function KpiCard({ kpi, onOpen }: { kpi: ProductionDashboardKpi; onOpen: () => v
   );
 }
 
-function InsightDrawer({ kpi, onClose }: { kpi: ProductionDashboardKpi | null; onClose: () => void }) {
+function InsightDrawer({ kpi, onClose }: { kpi: ProductionKpiStatus | null; onClose: () => void }) {
   const drawerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -204,6 +227,7 @@ export function ProductionDashboard({
   organization,
   locations,
   kpis,
+  budgets,
   userEmail,
   canAdminister,
   hasPortfolioAccess,
@@ -212,6 +236,7 @@ export function ProductionDashboard({
   organization: { id: string; slug: string; name: string };
   locations: TenantLocation[];
   kpis: ProductionKpiStatus[];
+  budgets: ProductionKpiBudget[] | null;
   userEmail: string | null;
   canAdminister: boolean;
   hasPortfolioAccess: boolean;
@@ -222,17 +247,19 @@ export function ProductionDashboard({
   const [section, setSection] = useState<ProductionKpiStatus["section"]>("executive");
   const [period, setPeriod] = useState<string | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
-  const [selectedKpi, setSelectedKpi] = useState<ProductionDashboardKpi | null>(null);
+  const [selectedKpi, setSelectedKpi] = useState<ProductionKpiStatus | null>(null);
   const [exportError, setExportError] = useState("");
   const closeInsight = useCallback(() => setSelectedKpi(null), []);
   const location = activeLocations.find((item) => item.id === locationId) ?? activeLocations[0] ?? null;
   const periods = useMemo(() => getSupportedProductionPeriods(kpis, locationId, section), [kpis, locationId, section]);
   const visibleKpis = useMemo(() => shapeProductionDashboardKpis({ kpis, locationId, section, period }), [kpis, locationId, section, period]);
+  const executiveCards = useMemo(() => shapeExecutiveScorecard({ kpis, budgets: budgets ?? [], locationId, timeZone: location?.timezone ?? "UTC", period }), [kpis, budgets, locationId, location?.timezone, period]);
+  const isExecutive = section === "executive";
   const sectionMeta = PRODUCTION_DASHBOARD_SECTIONS.find((item) => item.id === section) ?? PRODUCTION_DASHBOARD_SECTIONS[0];
   const SectionIcon = sectionIcons[section];
-  const currentCount = visibleKpis.filter((kpi) => kpi.health === "current").length;
-  const staleCount = visibleKpis.filter((kpi) => kpi.health === "stale").length;
-  const unavailableCount = visibleKpis.filter((kpi) => kpi.health === "unavailable").length;
+  const currentCount = isExecutive ? executiveCards.filter((card) => card.dataStatus === "Current").length : visibleKpis.filter((kpi) => kpi.health === "current").length;
+  const staleCount = isExecutive ? executiveCards.filter((card) => card.dataStatus === "Stale").length : visibleKpis.filter((kpi) => kpi.health === "stale").length;
+  const unavailableCount = isExecutive ? executiveCards.filter((card) => card.dataStatus === "Unavailable").length : visibleKpis.filter((kpi) => kpi.health === "unavailable").length;
   const style = {
     "--brand-accent": location ? safePresentationColor(location.presentation, "accent", "#315f83") : "#315f83",
     "--brand-dark": location ? safePresentationColor(location.presentation, "accentDark", "#183a5a") : "#183a5a",
@@ -240,7 +267,7 @@ export function ProductionDashboard({
 
   function exportScorecard() {
     try {
-      const csv = createProductionDashboardCsv(visibleKpis);
+      const csv = isExecutive ? createExecutiveScorecardCsv(executiveCards) : createProductionDashboardCsv(visibleKpis);
       const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
       const link = document.createElement("a");
       link.href = url;
@@ -280,14 +307,16 @@ export function ProductionDashboard({
 
         <section className="workspace">
           {exportError && <div className="test-result error" role="alert">{exportError}</div>}
-          <div className="page-head"><div><div className="eyebrow"><SectionIcon size={15} /> {location?.display_name ?? organization.name} operating view</div><h1>{sectionMeta.label}</h1><p>{sectionMeta.description}</p></div><div className="page-actions"><div className="period-control"><CalendarDays size={16} /><select aria-label="Reporting period" value={period ?? ""} onChange={(event) => { setPeriod(event.target.value || null); setSelectedKpi(null); }}><option value="">Latest available</option>{periods.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select><ChevronDown size={14} /></div><button className="button secondary" type="button" disabled={visibleKpis.length === 0} onClick={exportScorecard}><Download size={16} />Export scorecard</button></div></div>
+          <div className="page-head"><div><div className="eyebrow"><SectionIcon size={15} /> {location?.display_name ?? organization.name} operating view</div><h1>{sectionMeta.label}</h1><p>{sectionMeta.description}</p></div><div className="page-actions"><div className="period-control"><CalendarDays size={16} /><select aria-label="Reporting period" value={period ?? ""} onChange={(event) => { setPeriod(event.target.value || null); setSelectedKpi(null); }}><option value="">Latest available</option>{periods.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select><ChevronDown size={14} /></div><button className="button secondary" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}><Download size={16} />Export scorecard</button></div></div>
 
           <div className={`signal-strip ${unavailableCount > 0 ? "has-unavailable-sources" : ""}`} aria-live="polite"><div className="signal-primary"><Activity size={18} /><div><strong>{unavailableCount > 0 ? `${unavailableCount} KPI${unavailableCount === 1 ? " is" : "s are"} unavailable` : staleCount > 0 ? `${staleCount} KPI${staleCount === 1 ? " needs" : "s need"} freshness review` : currentCount > 0 ? "All visible KPI sources are current" : "No governed observations are available"}</strong><span>{currentCount} current · {staleCount} stale · {unavailableCount} unavailable</span></div></div><div className="signal-legend"><span className="legend good" />Current <span className="legend watch" />Stale <span className="legend critical" />Unavailable</div></div>
 
-          <div className="metric-grid">{visibleKpis.map((kpi) => <KpiCard key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} kpi={kpi} onOpen={() => setSelectedKpi(kpi)} />)}</div>
-          {visibleKpis.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No KPIs available for this view</h3><p>{canAdminister ? "Complete KPI publication and source binding in Admin Center." : "Ask a tenant administrator to configure this dashboard."}</p>{canAdminister && <Link className="button secondary" href="/admin">Open Admin Center</Link>}</div>}
+          <div className="metric-grid">{isExecutive
+            ? executiveCards.map((card) => <ExecutiveScorecardCard key={card.id} card={card} onOpen={() => setSelectedKpi(card.source)} />)
+            : visibleKpis.map((kpi) => <KpiCard key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} kpi={kpi} onOpen={() => setSelectedKpi(kpi)} />)}</div>
+          {!isExecutive && visibleKpis.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No KPIs available for this view</h3><p>{canAdminister ? "Complete KPI publication and source binding in Admin Center." : "Ask a tenant administrator to configure this dashboard."}</p>{canAdminister && <Link className="button secondary" href="/admin">Open Admin Center</Link>}</div>}
 
-          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll"><table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table></div></section>
+          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll">{isExecutive ? <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Comparison</th><th>Period</th><th>Performance</th><th>Data</th></tr></thead><tbody>{executiveCards.map((card) => <tr key={card.id} onClick={() => setSelectedKpi(card.source)}><td><strong>{card.title}</strong><span>{card.subtitle}</span></td><td>{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</td><td>{card.comparisonValue === null ? "—" : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel ?? ""}`}</td><td>{card.periodLabel}</td><td><span className={`status-pill ${card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral"}`}>{card.performanceStatus}</span></td><td><span className={`status-pill ${card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical"}`}>{card.dataStatus}</span></td></tr>)}</tbody></table> : <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table>}</div></section>
           <footer className="page-footer"><span>GM Intelligence Board · Production</span><span>Tenant-scoped observations. Data confidence and freshness are shown by source.</span></footer>
         </section>
       </main>

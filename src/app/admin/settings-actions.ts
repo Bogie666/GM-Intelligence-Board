@@ -25,6 +25,7 @@ import {
   isValidMetricKey,
   parseConfigurationJson,
   parseFiniteConfigurationNumber,
+  validateEndpointRecipeBindingConfiguration,
 } from "@/lib/production-admin-settings";
 import { validateUuid } from "@/lib/tenant-context";
 import type { AdminActionState } from "./actions";
@@ -641,6 +642,15 @@ export async function saveKpiBindingAction(
       }
       if (!SELECTABLE_ENDPOINT_RECIPE_KEYS.has(`${recipeId}:${recipeVersion}`)) {
         return failure("That endpoint recipe version is retired and cannot be used for a new binding.");
+      }
+      const endpointConfiguration = validateEndpointRecipeBindingConfiguration(
+        recipeId,
+        recipeVersion,
+        parameterValues.value as Record<string, unknown>,
+        businessUnitMappings.value as Record<string, unknown>,
+      );
+      if (!endpointConfiguration.ok) {
+        return failure("Correct the endpoint recipe configuration and try again.", endpointConfiguration.fieldErrors);
       }
       const { data: recipe } = await writable.supabase.from("service_titan_endpoint_recipe_refresh_policies").select("endpoint_recipe_id")
         .eq("endpoint_recipe_id", recipeId).eq("endpoint_recipe_version", recipeVersion)

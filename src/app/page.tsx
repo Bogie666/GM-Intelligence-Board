@@ -49,6 +49,7 @@ export default async function Home() {
       organization={tenant.organization}
       locations={tenant.locations}
       kpis={tenant.kpis}
+      budgets={tenant.budgets}
       userEmail={tenant.user.email}
       canAdminister={isAdminRole(tenant.role)}
       hasPortfolioAccess={tenant.hasPortfolioAccess}

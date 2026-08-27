@@ -12,6 +12,7 @@ import {
 } from "@/app/admin/settings-actions";
 import type { ProductionTenantContext } from "@/lib/tenant-context";
 import {
+  endpointRecipeConfigurationExample,
   profileDisplayName,
   type EndpointRecipePolicy,
   type ProductionAdminSettingsWorkspace,
@@ -70,6 +71,66 @@ function CatalogBindingGenerator({ workspace }: { workspace: ProductionAdminSett
           <span>{wiredKpiCount === 0 ? "No enabled KPI currently carries a wired endpoint recipe. Enable catalog KPIs first." : `${wiredKpiCount} enabled KPI${wiredKpiCount === 1 ? " carries" : "s carry"} a wired endpoint recipe.`}</span>
           <Submit disabled={wiredKpiCount === 0}>Generate draft bindings</Submit>
         </div>
+      </form>
+      <Notice state={state} />
+    </section>
+  );
+}
+
+function EndpointRecipeBindingForm({ tenant, workspace }: { tenant: ProductionTenantContext; workspace: ProductionAdminSettingsWorkspace }) {
+  const [state, action] = useActionState(saveKpiBindingAction, INITIAL);
+  const [kpiId, setKpiId] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [connectionId, setConnectionId] = useState("");
+  const [recipeKey, setRecipeKey] = useState("");
+  const staticRecipeKeys = new Set(selectableServiceTitanEndpointRecipes.map((recipe) => `${recipe.id}:${recipe.version}`));
+  const recipePolicies = new Map<string, EndpointRecipePolicy[]>();
+  for (const policy of workspace.endpointRecipes) {
+    const key = `${policy.endpoint_recipe_id}:${policy.endpoint_recipe_version}`;
+    if (staticRecipeKeys.has(key)) recipePolicies.set(key, [...(recipePolicies.get(key) ?? []), policy]);
+  }
+  const [recipeId = "", recipeVersionRaw = ""] = recipeKey.split(":");
+  const recipeVersion = Number(recipeVersionRaw);
+  const selectedRecipe = selectableServiceTitanEndpointRecipes.find((recipe) => recipe.id === recipeId && recipe.version === recipeVersion);
+  const selectedPolicies = recipePolicies.get(recipeKey) ?? [];
+  const [refreshInterval, setRefreshInterval] = useState("");
+  const assignedConnectionIds = new Set(tenant.assignments
+    .filter((assignment) => assignment.location_id === locationId && assignment.revoked_at === null)
+    .map((assignment) => assignment.connection_id));
+  const availableConnections = tenant.connections.filter((connection) => connection.status === "ready" && assignedConnectionIds.has(connection.id));
+  const existingBinding = workspace.bindings.find((binding) => binding.kpi_definition_id === kpiId
+    && binding.location_id === locationId && binding.approval_status !== "archived");
+  const immutableExisting = existingBinding?.approval_status === "approved";
+  const existingConfiguration = existingBinding?.source_method === "endpoint_recipe"
+    && existingBinding.endpoint_recipe_id === recipeId && existingBinding.endpoint_recipe_version === recipeVersion
+    && (existingBinding.approval_status === "draft" || existingBinding.approval_status === "rejected")
+    ? existingBinding : undefined;
+  const example = endpointRecipeConfigurationExample(recipeId, recipeVersion);
+  const parameterValues = existingConfiguration?.parameter_values ?? example.parameterValues;
+  const businessUnitMappings = existingConfiguration?.business_unit_mappings ?? example.businessUnitMappings;
+  const isJobTypeRecipe = recipeKey === "completed-job-type-count:2";
+
+  return (
+    <section className="production-panel">
+      <div className="production-panel-heading"><div><span>Migration-approved contract</span><h2>Configure an endpoint recipe draft</h2></div></div>
+      <p className="production-boundary-note">Select only the application-owned recipe and a cadence returned by the migration policy. This form cannot author endpoints, queries, credentials, or an approval decision.</p>
+      <form action={action} className="production-form-grid">
+        <input type="hidden" name="sourceMethod" value="endpoint_recipe" />
+        <label>Published ServiceTitan KPI<select name="kpiDefinitionId" required value={kpiId} onChange={(event) => setKpiId(event.target.value)}><option value="" disabled>Choose KPI</option>{workspace.kpiDefinitions.filter((definition) => definition.type === "service_titan").map((definition) => <option key={definition.id} value={definition.id}>{definition.title} · {definition.kpi_key} v{definition.version}</option>)}</select></label>
+        <label>Active location<select name="locationId" required value={locationId} onChange={(event) => { setLocationId(event.target.value); setConnectionId(""); }}><option value="" disabled>Choose location</option>{tenant.locations.filter((location) => location.status === "active").map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}</select></label>
+        <label>Validated assigned connection<select name="connectionId" required value={connectionId} onChange={(event) => setConnectionId(event.target.value)} disabled={!locationId}><option value="">{locationId ? "Choose connection" : "Choose a location first"}</option>{availableConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.display_name} · {connection.service_titan_tenant_id}</option>)}</select></label>
+        <label>Catalog-approved recipe<select required value={recipeKey} onChange={(event) => { const key = event.target.value; setRecipeKey(key); setRefreshInterval(recipePolicies.get(key)?.[0]?.refresh_interval ?? ""); }}><option value="" disabled>Choose recipe</option>{[...recipePolicies.keys()].map((key) => { const recipe = selectableServiceTitanEndpointRecipes.find((item) => `${item.id}:${item.version}` === key); return <option key={key} value={key}>{recipe?.name ?? key} · v{recipe?.version}</option>; })}</select></label>
+        <input type="hidden" name="endpointRecipeId" value={recipeId} /><input type="hidden" name="endpointRecipeVersion" value={recipeVersionRaw} />
+        <label>Migration-approved refresh cadence<select name="refreshInterval" required value={refreshInterval} disabled={!recipeKey} onChange={(event) => setRefreshInterval(event.target.value)}><option value="">{recipeKey ? "Choose cadence" : "Choose a recipe first"}</option>{selectedPolicies.map((policy) => <option key={policy.refresh_interval} value={policy.refresh_interval}>Every {policy.refresh_interval.replace("h", " hours")}</option>)}</select></label>
+        <label>Observation window<select name="observationWindow" defaultValue="trailing"><option value="trailing">Trailing cadence window</option><option value="today">Location-local day to date</option><option value="mtd">Location-local month to date</option><option value="ytd">Location-local year to date</option></select></label>
+        {immutableExisting ? <div className="production-notice error span-two" role="alert">The existing approved binding is immutable. Archive it through the trusted operator path, then create a replacement draft; configuration is intentionally not exposed here.</div> : <>
+          <label className="span-two">Binding parameter values (JSON object)<textarea key={`parameters:${existingConfiguration?.id ?? "new"}:${recipeKey}`} name="parameterValues" rows={4} defaultValue={JSON.stringify(parameterValues, null, 2)} spellCheck={false} aria-describedby="endpoint-parameter-help" /></label>
+          <p id="endpoint-parameter-help" className="production-inline-guidance span-two">{isJobTypeRecipe ? "Required: replace the empty includedJobTypeIds list with reviewed live ServiceTitan job-type IDs. Do not guess IDs. Set membershipRequired true only for the club-maintenance subset." : selectedRecipe?.description ?? "Choose a recipe to see its immutable contract."}</p>
+          <label className="span-two">Business-unit mappings (JSON object)<textarea key={`business-units:${existingConfiguration?.id ?? "new"}:${recipeKey}`} name="businessUnitMappings" rows={3} defaultValue={JSON.stringify(businessUnitMappings, null, 2)} spellCheck={false} aria-describedby="endpoint-business-unit-help" /></label>
+          <p id="endpoint-business-unit-help" className="production-inline-guidance span-two">Optional scope: use <code>{'{"includedBusinessUnitIds":[101,102]}'}</code> with reviewed ServiceTitan business-unit IDs, or <code>{'{}'}</code> to leave the recipe unscoped. Credential-like keys and unrecognized configuration are rejected server-side.</p>
+          {existingBinding ? <label className="production-checkbox-row span-two"><input type="checkbox" name="confirmReplacement" value="replace" required /><span><strong>Replace existing {existingBinding.approval_status} binding</strong><small>This resets the exact-location binding to a fresh draft and clears prior approval evidence.</small></span></label> : null}
+          <div className="production-form-footer"><span>Saving remains a non-ingestible draft. After saving, use the exact binding-specific <code>npm run data-source:approve</code> handoff shown in the KPI bindings registry below; the browser has no approval control.</span><Submit disabled={!selectedRecipe || !refreshInterval}>Save endpoint recipe draft</Submit></div>
+        </>}
       </form>
       <Notice state={state} />
     </section>
@@ -203,7 +264,7 @@ export function ProductionDataSourcesSettings({ tenant, workspace }: { tenant: P
           {workspace.reportSources.length === 0 ? <div className="production-empty">No saved report source has been registered for this tenant.</div> : null}
         </div>
       </section>
-      {!dataSourceControlsUnavailable ? <><CatalogBindingGenerator workspace={workspace} /><ProductionAdditionalDataSources tenant={tenant} workspace={workspace} /><SourceBindingForm tenant={tenant} workspace={workspace} /></> : null}
+      {!dataSourceControlsUnavailable ? <><CatalogBindingGenerator workspace={workspace} /><EndpointRecipeBindingForm tenant={tenant} workspace={workspace} /><ProductionAdditionalDataSources tenant={tenant} workspace={workspace} /><SourceBindingForm tenant={tenant} workspace={workspace} /></> : null}
       <section className="production-section">
         <div className="production-section-title"><div><span>Exact-location registry</span><h2>KPI bindings</h2></div><strong>{workspace.bindings.length}</strong></div>
         <p className="production-muted-copy">Draft bindings are intentionally non-ingestible. Saved reports and endpoint recipes expose trusted operator handoffs; custom endpoint and Domo bindings use authenticated server-side reconciliation. Configured cadence indicates scheduler eligibility, not proof that an external scheduler is deployed.</p>

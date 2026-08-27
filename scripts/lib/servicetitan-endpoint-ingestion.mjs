@@ -196,6 +196,28 @@ function statusName(item) {
   return "";
 }
 
+function includedJobTypeIdSet(parameterValues) {
+  if (!isRecord(parameterValues)) fail("parameter_invalid", "completed-job-type-count requires binding parameter values.");
+  const raw = parameterValues.includedJobTypeIds;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 500) {
+    fail("parameter_invalid", "includedJobTypeIds must be a bounded non-empty array.");
+  }
+  const ids = new Set();
+  for (const value of raw) {
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) ids.add(String(value));
+    else if (typeof value === "string" && /^[1-9][0-9]{0,17}$/.test(value)) ids.add(value);
+    else fail("parameter_invalid", "includedJobTypeIds must contain positive numeric ServiceTitan job-type IDs.");
+  }
+  if (parameterValues.membershipRequired !== undefined && typeof parameterValues.membershipRequired !== "boolean") {
+    fail("parameter_invalid", "membershipRequired must be a boolean when provided.");
+  }
+  return { ids, membershipRequired: parameterValues.membershipRequired === true };
+}
+
+function itemIdKey(value) {
+  return value === null || value === undefined ? null : String(value);
+}
+
 /**
  * Application-owned endpoint recipes. Each entry is a governed, versioned execution
  * contract: fixed provider query semantics plus a fixed reduction. New recipes and
@@ -265,12 +287,13 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       // Sold Threshold from binding parameter_values, default $1 (industry standard minimum)
       const threshold = parseFloat(options?.parameterValues?.soldThreshold ?? "1.0");
       if (!Number.isFinite(threshold) || threshold < 0) fail("parameter_invalid", "soldThreshold must be a non-negative number.");
-      // Group estimates by jobId — each unique job = one sales opportunity
+      // Group estimates by non-null jobId — each unique job = one sales opportunity.
       const opportunities = new Map();
       for (const item of items) {
-        if (!item.jobId) continue;
-        if (!opportunities.has(item.jobId)) opportunities.set(item.jobId, []);
-        opportunities.get(item.jobId).push(item);
+        const jobId = itemIdKey(item.jobId);
+        if (jobId === null) continue;
+        if (!opportunities.has(jobId)) opportunities.set(jobId, []);
+        opportunities.get(jobId).push(item);
       }
       // Closed = opportunity with at least one Sold estimate exceeding threshold
       let closed = 0;
@@ -319,6 +342,25 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       ["completedBefore", period.end.toISOString()],
     ],
     reduce: (items) => reducedResult(new Decimal(items.length)),
+  },
+  "completed-job-type-count@2": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["completedOnOrAfter", period.start.toISOString()],
+      ["completedBefore", period.end.toISOString()],
+    ],
+    validateOptions: (options) => includedJobTypeIdSet(options?.parameterValues),
+    reduce: (items, period, options) => {
+      const { ids, membershipRequired } = includedJobTypeIdSet(options?.parameterValues);
+      const count = items.filter((item) => {
+        const jobTypeId = itemIdKey(item.jobTypeId);
+        return jobTypeId !== null && ids.has(jobTypeId)
+          && (!membershipRequired || (item.membershipId !== null && item.membershipId !== undefined));
+      }).length;
+      return reducedResult(new Decimal(count));
+    },
   },
   "average-invoice-ticket@1": {
     category: "invoices",
@@ -507,6 +549,42 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
         total = total.plus(toDecimal(item.subtotal ?? "0", "Estimate subtotal"));
       }
       return reducedResult(total);
+    },
+  },
+  "sales-opportunity-count@1": {
+    category: "estimates",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["createdOnOrAfter", period.start.toISOString()],
+      ["createdBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      const jobIds = new Set();
+      for (const item of items) {
+        const jobId = itemIdKey(item.jobId);
+        if (jobId !== null) jobIds.add(jobId);
+      }
+      return reducedResult(new Decimal(jobIds.size));
+    },
+  },
+  "sold-estimate-average-ticket@1": {
+    category: "estimates",
+    supportsBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: (period) => [
+      ["soldAfter", period.start.toISOString()],
+      ["soldBefore", period.end.toISOString()],
+    ],
+    reduce: (items) => {
+      let total = new Decimal(0);
+      let soldCount = 0;
+      for (const item of items) {
+        if (statusName(item).toLowerCase() !== "sold") continue;
+        total = total.plus(toDecimal(item.subtotal ?? "0", "Estimate subtotal"));
+        soldCount += 1;
+      }
+      return ratioResult(total, new Decimal(soldCount));
     },
   },
   "jobs-with-appointments-count@1": {
@@ -713,6 +791,7 @@ export async function executeEndpointRecipe({
   if (includedIds && !execution.supportsBusinessUnitFilter) {
     fail("business_unit_filter_unsupported", `Endpoint recipe ${recipeId} v${recipeVersion} does not support business-unit filtering.`);
   }
+  execution.validateOptions?.(options);
   const token = await obtainServiceTitanToken(credentials, environment, options);
   const { items, pageCount } = await fetchEndpointItems({
     credentials,

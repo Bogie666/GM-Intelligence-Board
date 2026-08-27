@@ -55,6 +55,7 @@ vi.mock("@/lib/production-admin-settings", () => ({
   isValidMetricKey: () => true,
   parseFiniteConfigurationNumber: (value: string) => Number(value),
   parseConfigurationJson: (raw: string) => { try { return { ok: true, value: JSON.parse(raw) }; } catch { return { ok: false, message: "Invalid JSON" }; } },
+  validateEndpointRecipeBindingConfiguration: () => ({ ok: true }),
 }));
 vi.mock("@/lib/tenant-context", () => ({ validateUuid: (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) }));
 vi.mock("@/lib/supabase/service-role", () => ({ createServiceRoleSupabaseClient: mocks.serviceRole }));

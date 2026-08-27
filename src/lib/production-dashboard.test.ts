@@ -8,6 +8,7 @@ import {
   getSupportedProductionPeriods,
   productionDashboardExportFilename,
   productionPeriodKey,
+  shapeExecutiveScorecard,
   shapeProductionDashboardKpis,
 } from "./production-dashboard";
 import type { ProductionKpiStatus } from "./tenant-context";
@@ -137,6 +138,68 @@ describe("production dashboard shaping", () => {
     };
     expect(getProductionPriorTrend(wholePercent)?.priorLabel).toBe("0.3%");
     expect(createProductionDashboardCsv([wholePercent])).toContain("0.5%,0.3%,'+100.0% vs prior");
+  });
+
+  it("shapes the governed eight-card Executive scorecard without summing club maintenance or requiring equal ingestion timestamps", () => {
+    const asOf = "2026-08-19T01:00:00.000Z";
+    const executive = (kpiKey: string, value: number, overrides: Partial<ProductionKpiStatus> = {}) => kpi({
+      bindingId: `binding-${kpiKey}`,
+      kpiKey,
+      value,
+      periodEnd: "2026-08-18T23:59:59.000Z",
+      observedAt: asOf,
+      observationWindow: "mtd",
+      comparisonBasis: "prior_year_to_date",
+      comparisonValue: value - 10,
+      comparisonPeriodStart: "2025-08-01T05:00:00.000Z",
+      comparisonPeriodEnd: "2025-08-18T23:59:59.000Z",
+      ...overrides,
+    });
+    const cards = shapeExecutiveScorecard({
+      kpis: [
+        executive("revenue-mtd", 1000, { comparisonBasis: "none", comparisonValue: null }),
+        executive("repair-job-volume", 50),
+        executive("maintenance-job-volume", 30),
+        executive("sales-opportunity-volume", 40),
+        executive("sales-close", 0.5, { valueKind: "percent", percentValueScale: "ratio", comparisonBasis: "none", comparisonValue: null }),
+        executive("sales-average-ticket", 750, { valueKind: "currency", comparisonBasis: "none", comparisonValue: null }),
+        executive("active-members", 200, { observationWindow: "trailing", observedAt: "2026-08-19T01:07:00.000Z", comparisonBasis: "none", comparisonValue: null }),
+      ],
+      budgets: [{ kpiKey: "revenue-mtd", locationId: "location-1", amount: 2000, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: "2026-08-31", lineage: "target-1" }],
+      locationId: "location-1",
+      timeZone: "America/Chicago",
+      period: "2026-08-18",
+    });
+    expect(cards).toHaveLength(8);
+    expect(cards.find((card) => card.id === "maintenance-volume")?.value).toBe(30);
+    expect(cards.find((card) => card.id === "active-memberships")?.dataStatus).toBe("Current");
+    expect(cards.find((card) => card.id === "repair-volume")?.comparisonValue).toBe(40);
+    expect(cards.find((card) => card.id === "revenue-mtd")?.performanceStatus).toBe("Off Plan");
+  });
+
+  it("does not label a generic prior observation as a prior-year comparison", () => {
+    const cards = shapeExecutiveScorecard({
+      kpis: [kpi({
+        kpiKey: "repair-job-volume", observationWindow: "mtd", comparisonBasis: "none", comparisonValue: null,
+        priorValue: 80, periodEnd: "2026-08-18T23:59:59.000Z", observedAt: "2026-08-19T01:00:00.000Z",
+      })],
+      locationId: "location-1", timeZone: "America/Chicago", period: "2026-08-18",
+    });
+    const repair = cards.find((card) => card.id === "repair-volume");
+    expect(repair?.dataStatus).toBe("Unavailable");
+    expect(repair?.dataMessage).toContain("prior-year comparison");
+  });
+
+  it("uses an exact-location budget before an organization-wide fallback", () => {
+    const cards = shapeExecutiveScorecard({
+      kpis: [kpi({ kpiKey: "revenue-mtd", observationWindow: "mtd", value: 100, periodEnd: "2026-08-18T23:59:59.000Z", observedAt: "2026-08-19T01:00:00.000Z" })],
+      budgets: [
+        { kpiKey: "revenue-mtd", locationId: null, amount: 200, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: null, lineage: "global" },
+        { kpiKey: "revenue-mtd", locationId: "location-1", amount: 120, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: null, lineage: "exact" },
+      ],
+      locationId: "location-1", timeZone: "America/Chicago", period: "2026-08-18",
+    });
+    expect(cards.find((card) => card.id === "revenue-mtd")?.budgetLineage).toBe("exact");
   });
 
   it("creates a filesystem-safe contextual export filename", () => {

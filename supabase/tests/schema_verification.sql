@@ -280,14 +280,14 @@ begin
     raise exception 'data-source create/archive/inspect RPC ACL boundary is incorrect';
   end if;
 
-  if (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1) <> 36
-     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive') <> 8
+  if (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1) <> 40
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'executive') <> 12
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'revenue') <> 6
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'calls') <> 6
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'appointments') <> 5
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'sales') <> 6
      or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and section = 'membership') <> 5
-     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and endpoint_recipe_id is not null) <> 23
+     or (select pg_catalog.count(*) from public.original_kpi_catalog where catalog_version = 1 and endpoint_recipe_id is not null) <> 27
      or exists (
        select 1 from public.original_kpi_catalog catalog
        join (
@@ -306,7 +306,11 @@ begin
            ('calls-booked', 'inbound-calls-booked'),
            ('calls-not-booked', 'inbound-calls-not-booked'),
            ('active-members', 'active-memberships'),
-           ('booking-rate', 'inbound-call-booking-rate')
+           ('booking-rate', 'inbound-call-booking-rate'),
+          ('repair-job-volume', 'completed-job-type-count'),
+          ('maintenance-job-volume', 'completed-job-type-count'),
+          ('sales-opportunity-volume', 'sales-opportunity-count'),
+          ('sales-average-ticket', 'sold-estimate-average-ticket')
        ) as expected_wiring(kpi_key, recipe_id)
          on expected_wiring.kpi_key = catalog.kpi_key
        where catalog.catalog_version = 1
@@ -324,7 +328,11 @@ begin
            ('membership-net', 'membership-net-growth', 2),
            ('pipeline', 'sold-estimates-value', 1),
            ('hvac-sales-appts', 'jobs-with-appointments-count', 1),
-           ('plumbing-appts', 'jobs-with-appointments-count', 1)
+           ('plumbing-appts', 'jobs-with-appointments-count', 1),
+          ('repair-job-volume', 'completed-job-type-count', 2),
+          ('maintenance-job-volume', 'completed-job-type-count', 2),
+          ('sales-opportunity-volume', 'sales-opportunity-count', 1),
+          ('sales-average-ticket', 'sold-estimate-average-ticket', 1)
        ) as tranche1(kpi_key, recipe_id, recipe_version)
          on tranche1.kpi_key = catalog.kpi_key
        where catalog.catalog_version = 1
@@ -1261,13 +1269,13 @@ begin
   enabled_count := public.enable_original_kpi_catalog(
     'a0000000-0000-4000-8000-000000000001', array[]::text[]
   );
-  if enabled_count <> 35
+  if enabled_count <> 39
      or public.enable_original_kpi_catalog(
        'a0000000-0000-4000-8000-000000000001', array[]::text[]
      ) <> 0
      or (select pg_catalog.count(*) from public.custom_kpi_definitions definition
          where definition.organization_id = 'a0000000-0000-4000-8000-000000000001'
-           and definition.kpi_key in (select catalog.kpi_key from public.original_kpi_catalog catalog)) <> 36
+           and definition.kpi_key in (select catalog.kpi_key from public.original_kpi_catalog catalog)) <> 40
      or exists (
        select 1 from public.kpi_observations observation
        join public.custom_kpi_definitions definition

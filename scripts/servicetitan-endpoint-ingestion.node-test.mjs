@@ -53,11 +53,11 @@ test("every migration-owned recipe version has an execution contract and categor
     Object.keys(ENDPOINT_RECIPE_EXECUTIONS).sort(),
     [
       "active-memberships@1", "average-invoice-ticket@1", "average-invoice-ticket@2", "canceled-memberships@1", "canceled-memberships@2",
-      "completed-appointments@1", "completed-jobs-count@1", "completed-revenue@1", "completed-revenue@2",
+      "completed-appointments@1", "completed-job-type-count@2", "completed-jobs-count@1", "completed-revenue@1", "completed-revenue@2",
       "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-call-booking-rate@3", "inbound-calls-booked@1",
       "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
       "membership-net-growth@1", "membership-net-growth@2", "new-memberships@1", "new-memberships@2", "sales-close-rate@1", "sales-close-rate@2",
-      "sold-estimates-value@1",
+      "sales-opportunity-count@1", "sold-estimate-average-ticket@1", "sold-estimates-value@1",
     ],
   );
 });

@@ -241,6 +241,24 @@ export interface ProductionKpiStatus {
   observedAt: string | null;
   confidence: "high" | "medium" | "low" | "unknown";
   health: "current" | "stale" | "unavailable";
+  /** Exact observed calendar contract; prior observations alone are never a PY comparison. */
+  observationWindow?: "trailing" | "today" | "mtd" | "ytd";
+  comparisonBasis?: "none" | "prior_year_to_date";
+  comparisonValue?: number | null;
+  comparisonPeriodStart?: string | null;
+  comparisonPeriodEnd?: string | null;
+}
+
+/** Published, effective-dated planning input. Dashboard code decides whether it applies to an observation. */
+export interface ProductionKpiBudget {
+  kpiKey: string;
+  locationId: string | null;
+  amount: number;
+  planningType: "budget";
+  lifecycle: "published";
+  effectiveStart: string;
+  effectiveEnd: string | null;
+  lineage: string;
 }
 
 export interface ProductionTenantContext {
@@ -254,6 +272,7 @@ export interface ProductionTenantContext {
   assignments: ServiceTitanAssignment[];
   readiness: TenantReadiness;
   kpis: ProductionKpiStatus[];
+  budgets: ProductionKpiBudget[] | null;
   /** Loaded only for an authenticated owner/admin Admin Center request. */
   adminConfiguration?: ProductionAdminConfiguration;
 }
@@ -543,7 +562,7 @@ async function loadProductionKpis(
       .select("id, kpi_key, title, section, value_kind, stale_after_hours, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, source_method, refresh_interval, canonical_source_fingerprint")
+      .select("id, kpi_definition_id, location_id, source_method, refresh_interval, observation_window, comparison_basis, canonical_source_fingerprint")
       .eq("organization_id", organizationId).eq("approval_status", "approved"),
   ]);
   if (catalogResult.error || definitionsResult.error || bindingsResult.error) return null;
@@ -562,12 +581,14 @@ async function loadProductionKpis(
     id: string; kpi_definition_id: string; location_id: string;
     source_method: GovernedKpiSourceMethod;
     refresh_interval: string | null;
+    observation_window: "trailing" | "today" | "mtd" | "ytd";
+    comparison_basis: "none" | "prior_year_to_date";
     canonical_source_fingerprint: string | null;
   }>;
   const observationResults = await Promise.all(bindings.map((binding) => {
     if (!binding.canonical_source_fingerprint) return Promise.resolve({ data: [], error: null });
     return supabase.from("kpi_observations")
-      .select("binding_id, source_fingerprint, period_end, observed_at, value, prior_value, confidence")
+      .select("binding_id, source_fingerprint, period_end, observed_at, value, prior_value, comparison_basis, comparison_value, comparison_period_start, comparison_period_end, confidence")
       .eq("organization_id", organizationId)
       .eq("binding_id", binding.id)
       .eq("source_fingerprint", binding.canonical_source_fingerprint)
@@ -581,7 +602,12 @@ async function loadProductionKpis(
   if (observationResults.some((result) => result.error)) return null;
   type ProductionObservation = {
     binding_id: string; source_fingerprint: string; period_end: string; observed_at: string;
-    value: number; prior_value: number | null; confidence: ProductionKpiStatus["confidence"];
+    value: number; prior_value: number | null;
+    comparison_basis: "none" | "prior_year_to_date";
+    comparison_value: number | null;
+    comparison_period_start: string | null;
+    comparison_period_end: string | null;
+    confidence: ProductionKpiStatus["confidence"];
   };
   const observations = observationResults.flatMap((result) => (result.data ?? []) as ProductionObservation[]);
   const originalDefinitions = definitions.filter((definition) => definition.external_source?.catalogName === "original");
@@ -628,6 +654,8 @@ async function loadProductionKpis(
           bindingId: binding.id, definitionId: definition.id, kpiKey: definition.kpi_key, title: definition.title,
           section: definition.section, valueKind: definition.value_kind, ...catalogPresentation,
           percentValueScale: getPercentValueScaleForSourceMethod(binding.source_method),
+          observationWindow: binding.observation_window,
+          comparisonBasis: binding.comparison_basis,
           locationId: location.id,
           locationName: location.display_name,
           sourceStatus: binding.canonical_source_fingerprint ? "Approved governed source" : "Source fingerprint required",
@@ -647,12 +675,45 @@ async function loadProductionKpis(
           return {
             ...common,
             value: observation.value, priorValue: observation.prior_value,
+            comparisonBasis: observation.comparison_basis,
+            comparisonValue: observation.comparison_value,
+            comparisonPeriodStart: observation.comparison_period_start,
+            comparisonPeriodEnd: observation.comparison_period_end,
             periodEnd: observation.period_end, observedAt: observation.observed_at,
             confidence: observation.confidence, health,
           };
         });
       });
     });
+}
+
+async function loadProductionBudgets(
+  supabase: SupabaseClient,
+  organizationId: string,
+): Promise<ProductionKpiBudget[] | null> {
+  const { data, error } = await supabase.from("kpi_targets")
+    .select("location_id, metric_key, target_value, effective_from, effective_to, dimensions, lifecycle, version")
+    .eq("organization_id", organizationId)
+    .eq("metric_key", "revenue-mtd")
+    .eq("lifecycle", "published")
+    .contains("dimensions", { planning_type: "budget" })
+    .order("effective_from", { ascending: false })
+    .order("version", { ascending: false });
+  if (error || !data) return null;
+  return data.flatMap((row): ProductionKpiBudget[] => {
+    const amount = typeof row.target_value === "number" ? row.target_value : Number(row.target_value);
+    if (!Number.isFinite(amount) || amount < 0 || typeof row.effective_from !== "string") return [];
+    return [{
+      kpiKey: "revenue-mtd",
+      locationId: typeof row.location_id === "string" ? row.location_id : null,
+      amount,
+      planningType: "budget",
+      lifecycle: "published",
+      effectiveStart: row.effective_from,
+      effectiveEnd: typeof row.effective_to === "string" ? row.effective_to : null,
+      lineage: `kpi_targets:revenue-mtd:v${row.version}`,
+    }];
+  });
 }
 
 const ADMIN_PAGE_SIZE = 500;
@@ -729,7 +790,10 @@ export async function getProductionTenantContext(
     }),
   );
   const assignments = assignmentsResult.data as ServiceTitanAssignment[];
-  const kpis = await loadProductionKpis(auth.supabase, organizationId, locations);
+  const [kpis, budgets] = await Promise.all([
+    loadProductionKpis(auth.supabase, organizationId, locations),
+    loadProductionBudgets(auth.supabase, organizationId),
+  ]);
   if (!kpis) {
     return { ok: false, reason: "tenant-query-failed", message: AUTH_MESSAGES["tenant-query-failed"] };
   }
@@ -821,6 +885,7 @@ export async function getProductionTenantContext(
       assignments,
       readiness: getTenantReadiness(locations, connections, assignments),
       kpis,
+      budgets,
       ...(adminConfiguration ? { adminConfiguration } : {}),
     },
   };

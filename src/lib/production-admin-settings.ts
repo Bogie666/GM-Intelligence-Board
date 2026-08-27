@@ -54,6 +54,8 @@ export interface ProductionKpiBinding {
   domo_dataset_source_id: string | null;
   refresh_interval: string | null;
   report_reduction: string | null;
+  parameter_values: Record<string, unknown>;
+  business_unit_mappings: Record<string, unknown>;
   value_field: string | null;
   numerator_field: string | null;
   denominator_field: string | null;
@@ -201,7 +203,7 @@ export async function loadProductionAdminSettings(
       .select("id, kpi_key, title, type, value_kind, lifecycle, version, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published").order("title"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, connection_id, source_method, observation_window, endpoint_recipe_id, endpoint_recipe_version, report_source_id, custom_endpoint_source_id, domo_connection_id, domo_dataset_source_id, refresh_interval, report_reduction, value_field, numerator_field, denominator_field, approval_status, updated_at")
+      .select("id, kpi_definition_id, location_id, connection_id, source_method, observation_window, endpoint_recipe_id, endpoint_recipe_version, report_source_id, custom_endpoint_source_id, domo_connection_id, domo_dataset_source_id, refresh_interval, report_reduction, parameter_values, business_unit_mappings, value_field, numerator_field, denominator_field, approval_status, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("kpi_targets")
       .select("id, location_id, kpi_definition_id, metric_key, version, target_value, warning_value, effective_from, effective_to, dimensions, lifecycle, updated_at")
@@ -293,6 +295,80 @@ export function parseFiniteConfigurationNumber(value: string): number | null {
   if (value.trim() === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && Math.abs(parsed) <= 1_000_000_000_000_000 ? parsed : null;
+}
+
+type EndpointBindingConfigurationResult =
+  | { ok: true }
+  | { ok: false; fieldErrors: Record<"parameterValues" | "businessUnitMappings", string> };
+
+function isNonNegativeProviderId(value: unknown): boolean {
+  return (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+    || (typeof value === "string" && /^\d{1,18}$/.test(value));
+}
+
+function isPositiveProviderId(value: unknown): boolean {
+  return (typeof value === "number" && Number.isSafeInteger(value) && value > 0)
+    || (typeof value === "string" && /^[1-9]\d{0,17}$/.test(value));
+}
+
+/** Browser input may select a migration-owned recipe but may not extend its contract. */
+export function validateEndpointRecipeBindingConfiguration(
+  recipeId: string,
+  recipeVersion: number,
+  parameterValues: Record<string, unknown>,
+  businessUnitMappings: Record<string, unknown>,
+): EndpointBindingConfigurationResult {
+  const fieldErrors: Partial<Record<"parameterValues" | "businessUnitMappings", string>> = {};
+  const mappingKeys = Object.keys(businessUnitMappings);
+  if (mappingKeys.some((key) => key !== "includedBusinessUnitIds")) {
+    fieldErrors.businessUnitMappings = "Business-unit mappings may contain only includedBusinessUnitIds.";
+  } else if (businessUnitMappings.includedBusinessUnitIds !== undefined) {
+    const ids = businessUnitMappings.includedBusinessUnitIds;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > 500 || !ids.every(isNonNegativeProviderId)) {
+      fieldErrors.businessUnitMappings = "includedBusinessUnitIds must be a non-empty list of at most 500 numeric ServiceTitan IDs.";
+    }
+  }
+
+  const recipeKey = `${recipeId}@${recipeVersion}`;
+  const parameterKeys = Object.keys(parameterValues);
+  if (recipeKey === "completed-job-type-count@2") {
+    if (parameterKeys.some((key) => key !== "includedJobTypeIds" && key !== "membershipRequired")) {
+      fieldErrors.parameterValues = "This recipe accepts only includedJobTypeIds and optional membershipRequired.";
+    } else {
+      const ids = parameterValues.includedJobTypeIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 500 || !ids.every(isPositiveProviderId)) {
+        fieldErrors.parameterValues = "includedJobTypeIds must be a non-empty list of at most 500 positive ServiceTitan job-type IDs.";
+      } else if (parameterValues.membershipRequired !== undefined && typeof parameterValues.membershipRequired !== "boolean") {
+        fieldErrors.parameterValues = "membershipRequired must be true or false when provided.";
+      }
+    }
+  } else if (recipeKey === "sales-close-rate@2") {
+    if (parameterKeys.some((key) => key !== "soldThreshold")) {
+      fieldErrors.parameterValues = "This recipe accepts only optional soldThreshold.";
+    } else if (parameterValues.soldThreshold !== undefined
+      && (typeof parameterValues.soldThreshold !== "number" || !Number.isFinite(parameterValues.soldThreshold) || parameterValues.soldThreshold < 0)) {
+      fieldErrors.parameterValues = "soldThreshold must be a non-negative finite number when provided.";
+    }
+  } else if (parameterKeys.length > 0) {
+    fieldErrors.parameterValues = "This migration-approved recipe does not accept binding parameter values.";
+  }
+
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors: fieldErrors as Record<"parameterValues" | "businessUnitMappings", string> }
+    : { ok: true };
+}
+
+export function endpointRecipeConfigurationExample(recipeId: string, recipeVersion: number): {
+  parameterValues: Record<string, unknown>;
+  businessUnitMappings: Record<string, unknown>;
+} {
+  if (`${recipeId}@${recipeVersion}` === "completed-job-type-count@2") {
+    return { parameterValues: { includedJobTypeIds: [], membershipRequired: false }, businessUnitMappings: {} };
+  }
+  if (`${recipeId}@${recipeVersion}` === "sales-close-rate@2") {
+    return { parameterValues: { soldThreshold: 1.01 }, businessUnitMappings: {} };
+  }
+  return { parameterValues: {}, businessUnitMappings: {} };
 }
 
 export function profileDisplayName(membership: ProductionAccessMembership): string {

@@ -147,6 +147,7 @@ export function deriveBindingPeriod(refreshInterval, now = new Date()) {
 }
 
 const OBSERVATION_WINDOWS = Object.freeze(["trailing", "today", "mtd", "ytd"]);
+const COMPARISON_BASES = Object.freeze(["none", "prior_year_to_date"]);
 
 /** Reads a wall-clock component map for an instant in a named IANA timezone. */
 function zonedParts(instant, timeZone) {
@@ -169,18 +170,18 @@ function zonedParts(instant, timeZone) {
 }
 
 /** Converts local wall-clock fields in a named timezone to the exact UTC instant. */
-function zonedTimeToUtc({ year, month, day }, timeZone) {
+function zonedTimeToUtc({ year, month, day, hour = 0, minute = 0, second = 0 }, timeZone) {
   // Initial guess: treat the local wall clock as UTC, then correct by the
   // observed offset. Two iterations converge across every real UTC offset,
   // including DST transitions.
-  let guess = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+  let guess = Date.UTC(year, month - 1, day, hour, minute, second, 0);
   for (let iteration = 0; iteration < 3; iteration += 1) {
     const observed = zonedParts(new Date(guess), timeZone);
     const observedAsUtc = Date.UTC(
       observed.year, observed.month - 1, observed.day,
       observed.hour, observed.minute, observed.second, 0,
     );
-    const target = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+    const target = Date.UTC(year, month - 1, day, hour, minute, second, 0);
     const difference = target - observedAsUtc;
     if (difference === 0) return new Date(guess);
     guess += difference;
@@ -217,6 +218,34 @@ export function deriveObservationPeriod(binding, now = new Date()) {
   return { start, end };
 }
 
+/** Same local elapsed MTD period one calendar year earlier, with leap-day clamping. */
+export function deriveComparisonPeriod(binding, period) {
+  const basis = binding.comparison_basis ?? "none";
+  if (!COMPARISON_BASES.includes(basis)) {
+    throw new WorkerError("comparison-basis-invalid", `Comparison basis ${basis} is not supported.`);
+  }
+  if (basis === "none") return null;
+  if (binding.observation_window !== "mtd") {
+    throw new WorkerError("comparison-window-invalid", "Prior-year comparison requires an MTD observation window.");
+  }
+  const timeZone = binding.location_timezone;
+  if (typeof timeZone !== "string" || timeZone.trim() === "") {
+    throw new WorkerError("timezone-unavailable", "Prior-year comparison requires the bound location timezone.");
+  }
+  const localEnd = zonedParts(period.end, timeZone);
+  const year = localEnd.year - 1;
+  const maxDay = new Date(Date.UTC(year, localEnd.month, 0)).getUTCDate();
+  const start = zonedTimeToUtc({ year, month: localEnd.month, day: 1 }, timeZone);
+  const end = zonedTimeToUtc({
+    year, month: localEnd.month, day: Math.min(localEnd.day, maxDay),
+    hour: localEnd.hour, minute: localEnd.minute, second: localEnd.second,
+  }, timeZone);
+  if (!(start.getTime() < end.getTime())) {
+    throw new WorkerError("comparison-period-empty", "The prior-year comparison period is empty at this instant.");
+  }
+  return { start, end };
+}
+
 async function alreadyMaterialized(supabase, organizationId, bindingId, idempotencyKey) {
   const { data, error } = await supabase.from("kpi_observations").select("id")
     .eq("organization_id", organizationId).eq("binding_id", bindingId)
@@ -236,7 +265,10 @@ async function priorValue(supabase, organizationId, bindingId, sourceFingerprint
   return data?.value ?? null;
 }
 
-async function writeObservation(supabase, { binding, period, reduced, idempotencyKey, method, recipeVersion, extraMetadata = {} }) {
+async function writeObservation(supabase, {
+  binding, period, reduced, comparisonPeriod = null, comparisonReduced = null,
+  idempotencyKey, method, recipeVersion, extraMetadata = {},
+}) {
   const prior = await priorValue(supabase, binding.organization_id, binding.binding_id, binding.canonical_source_fingerprint, period.start);
   const { error } = await supabase.from("kpi_observations").insert({
     organization_id: binding.organization_id,
@@ -252,6 +284,12 @@ async function writeObservation(supabase, { binding, period, reduced, idempotenc
     prior_value: prior,
     numerator: reduced.decimalNumerator,
     denominator: reduced.decimalDenominator,
+    comparison_basis: binding.comparison_basis ?? "none",
+    comparison_value: comparisonReduced?.decimalValue ?? null,
+    comparison_numerator: comparisonReduced?.decimalNumerator ?? null,
+    comparison_denominator: comparisonReduced?.decimalDenominator ?? null,
+    comparison_period_start: comparisonPeriod?.start.toISOString() ?? null,
+    comparison_period_end: comparisonPeriod?.end.toISOString() ?? null,
     status: "valid",
     confidence: "high",
     unmapped_record_count: 0,
@@ -295,6 +333,7 @@ async function loadServiceTitanConnection(supabase, organizationId, connectionId
 
 async function processEndpointRecipeBinding(supabase, binding, dryRun) {
   const period = deriveObservationPeriod(binding);
+  const comparisonPeriod = deriveComparisonPeriod(binding, period);
   const idempotencyKey = makeEndpointObservationIdempotencyKey({
     organizationId: binding.organization_id,
     bindingId: binding.binding_id,
@@ -320,10 +359,24 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
       period,
       options: { parameterValues: binding.parameter_values ?? {}, timeZone: binding.location_timezone },
     });
+    const comparisonReduced = comparisonPeriod
+      ? await executeEndpointRecipe({
+        credentials,
+        environment: connection.environment,
+        tenantId: connection.service_titan_tenant_id,
+        recipeId: binding.endpoint_recipe_id,
+        recipeVersion: binding.endpoint_recipe_version,
+        businessUnitMappings: binding.business_unit_mappings,
+        period: comparisonPeriod,
+        options: { parameterValues: binding.parameter_values ?? {}, timeZone: binding.location_timezone },
+      })
+      : null;
     const written = await writeObservation(supabase, {
       binding,
       period,
       reduced,
+      comparisonPeriod,
+      comparisonReduced,
       idempotencyKey,
       method: "endpoint-recipe",
       recipeVersion: binding.endpoint_recipe_version,
@@ -332,6 +385,10 @@ async function processEndpointRecipeBinding(supabase, binding, dryRun) {
         recipeVersion: binding.endpoint_recipe_version,
         pageCount: reduced.pageCount,
         totalRowCount: reduced.totalRowCount,
+        ...(comparisonReduced ? {
+          comparisonPageCount: comparisonReduced.pageCount,
+          comparisonTotalRowCount: comparisonReduced.totalRowCount,
+        } : {}),
         ...(reduced.metricComponents ? { metricComponents: reduced.metricComponents } : {}),
       },
     });

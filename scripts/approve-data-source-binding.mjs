@@ -158,7 +158,7 @@ export async function governBinding(args, dependencies = {}) {
   const supabase = dependencies.supabase ?? serviceRoleClient();
   const binding = await exactSingle(
     supabase.from("custom_kpi_location_bindings")
-      .select("id,organization_id,kpi_definition_id,location_id,connection_id,service_titan_tenant_id,source_method,endpoint_recipe_id,endpoint_recipe_version,custom_endpoint_source_id,domo_connection_id,domo_dataset_source_id,business_unit_mappings,approval_status,observation_window,refresh_interval")
+      .select("id,organization_id,kpi_definition_id,location_id,connection_id,service_titan_tenant_id,source_method,endpoint_recipe_id,endpoint_recipe_version,custom_endpoint_source_id,domo_connection_id,domo_dataset_source_id,parameter_values,business_unit_mappings,approval_status,observation_window,refresh_interval")
       .eq("organization_id", organizationId).eq("id", bindingId),
     "binding-unavailable", "The exact KPI binding is unavailable.",
   );
@@ -212,7 +212,11 @@ export async function governBinding(args, dependencies = {}) {
         recipeVersion: binding.endpoint_recipe_version,
         businessUnitMappings: binding.business_unit_mappings,
         period,
-        options: { ...(dependencies.executionOptions ?? {}), timeZone: location.timezone },
+        options: {
+          ...(dependencies.executionOptions ?? {}),
+          parameterValues: binding.parameter_values,
+          timeZone: location.timezone,
+        },
       });
       rpcName = "approve_service_titan_endpoint_binding";
       rpcArgs = {
