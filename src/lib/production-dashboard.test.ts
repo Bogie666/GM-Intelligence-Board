@@ -184,6 +184,75 @@ describe("production dashboard shaping", () => {
     expect(cards.find((card) => card.id === "revenue-mtd")?.performanceStatus).toBe("Off Plan");
   });
 
+  it("adds selected-period membership movement without changing the active-membership headline", () => {
+    const membership = (kpiKey: string, value: number, overrides: Partial<ProductionKpiStatus> = {}) => kpi({
+      bindingId: `binding-${kpiKey}`,
+      kpiKey,
+      value,
+      valueKind: "number",
+      section: "membership",
+      observationWindow: "mtd",
+      periodEnd: "2026-08-18T23:59:59.000Z",
+      observedAt: "2026-08-19T01:00:00.000Z",
+      ...overrides,
+    });
+    const cards = shapeExecutiveScorecard({
+      kpis: [
+        membership("active-members", 200, { observationWindow: "trailing", observedAt: "2026-08-19T01:07:00.000Z" }),
+        membership("new-members", 24, { observedAt: "2026-08-19T01:04:00.000Z" }),
+        membership("member-cancels", 9, { observedAt: "2026-08-19T01:05:00.000Z" }),
+        membership("membership-net", 15, { observedAt: "2026-08-19T01:06:00.000Z" }),
+      ],
+      locationId: "location-1",
+      timeZone: "America/Chicago",
+      period: "2026-08-18",
+    });
+    const active = cards.find((card) => card.id === "active-memberships");
+    expect(active?.value).toBe(200);
+    expect(active?.membershipMovement).toEqual({
+      periodLabel: "MTD through Aug 18, 2026",
+      newCount: 24,
+      lostCount: 9,
+      netCount: 15,
+    });
+  });
+
+  it("keeps the active-membership headline available but withholds incomplete or stale movement", () => {
+    const rows = [
+      kpi({ kpiKey: "active-members", value: 200, valueKind: "number", observationWindow: "trailing" }),
+      kpi({ kpiKey: "new-members", value: 24, valueKind: "number", observationWindow: "mtd" }),
+      kpi({ kpiKey: "member-cancels", value: 9, valueKind: "number", observationWindow: "mtd", health: "stale" }),
+      kpi({ kpiKey: "membership-net", value: 15, valueKind: "number", observationWindow: "mtd" }),
+    ];
+    const cards = shapeExecutiveScorecard({
+      kpis: rows,
+      locationId: "location-1",
+      timeZone: "America/Chicago",
+      period: "2026-08-18",
+    });
+    const active = cards.find((card) => card.id === "active-memberships");
+    expect(active?.value).toBe(200);
+    expect(active?.dataStatus).toBe("Current");
+    expect(active?.membershipMovement).toBeNull();
+  });
+
+  it("aligns latest membership movement to the active-membership period instead of mixing in newer flow observations", () => {
+    const rows = [
+      kpi({ kpiKey: "active-members", value: 200, valueKind: "number", observationWindow: "trailing", periodEnd: "2026-08-18T23:59:59.000Z" }),
+      kpi({ bindingId: "new-current", kpiKey: "new-members", value: 24, valueKind: "number", observationWindow: "mtd", periodEnd: "2026-08-18T23:59:59.000Z" }),
+      kpi({ bindingId: "new-newer", kpiKey: "new-members", value: 99, valueKind: "number", observationWindow: "mtd", periodEnd: "2026-08-19T23:59:59.000Z" }),
+      kpi({ kpiKey: "member-cancels", value: 9, valueKind: "number", observationWindow: "mtd", periodEnd: "2026-08-18T23:59:59.000Z" }),
+      kpi({ kpiKey: "membership-net", value: 15, valueKind: "number", observationWindow: "mtd", periodEnd: "2026-08-18T23:59:59.000Z" }),
+    ];
+    const active = shapeExecutiveScorecard({
+      kpis: rows,
+      locationId: "location-1",
+      timeZone: "America/Chicago",
+    }).find((card) => card.id === "active-memberships");
+    expect(active?.membershipMovement?.newCount).toBe(24);
+    expect(active?.membershipMovement?.netCount).toBe(15);
+  });
+
   it("does not label a generic prior observation as a prior-year comparison", () => {
     const cards = shapeExecutiveScorecard({
       kpis: [kpi({

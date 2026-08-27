@@ -85,6 +85,9 @@ function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard
   const comparisonDelta = card.value !== null && card.comparisonValue !== null && Number.isFinite(card.value) && Number.isFinite(card.comparisonValue)
     ? card.comparisonValue === 0 ? null : ((card.value - card.comparisonValue) / Math.abs(card.comparisonValue)) * 100
     : null;
+  const signedMembershipNet = card.membershipMovement
+    ? `${card.membershipMovement.netCount > 0 ? "+" : ""}${formatProductionValue(card.membershipMovement.netCount, "number")}`
+    : null;
   return (
     <article className={`metric-card executive-scorecard-card status-${dataClass}`}>
       <div className="metric-card-topline" />
@@ -98,6 +101,14 @@ function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard
           <div><span>Prior year</span><strong>{formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)}</strong></div>
           <div><span>Change vs PY</span><strong className={comparisonDelta !== null && comparisonDelta < 0 ? "negative" : "positive"}>{comparisonDelta === null ? "N/A" : `${comparisonDelta > 0 ? "+" : ""}${comparisonDelta.toFixed(1)}%`}</strong></div>
           <small>{card.comparisonLabel}</small>
+        </div>
+      ) : null}
+      {card.membershipMovement ? (
+        <div className="executive-membership-movement" aria-label={`${card.title} selected-period movement`}>
+          <div><span>New</span><strong className="positive">{formatProductionValue(card.membershipMovement.newCount, "number")}</strong></div>
+          <div><span>Lost</span><strong className="negative">{formatProductionValue(card.membershipMovement.lostCount, "number")}</strong></div>
+          <div><span>Net gain/loss</span><strong className={card.membershipMovement.netCount < 0 ? "negative" : card.membershipMovement.netCount > 0 ? "positive" : undefined}>{signedMembershipNet}</strong></div>
+          <small>{card.membershipMovement.periodLabel}</small>
         </div>
       ) : null}
       <div className="metric-subtitle">{card.subtitle}</div>

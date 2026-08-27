@@ -139,6 +139,13 @@ a { color: inherit; text-decoration: none; }
 .executive-py-comparison strong.positive { color: var(--green); }
 .executive-py-comparison strong.negative { color: var(--red); }
 .executive-py-comparison small { grid-column: 1 / -1; color: #68788b; font-size: 8px; }
+.executive-membership-movement { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 13px; padding: 10px; border: 1px solid #d7e2ee; border-radius: 8px; background: #f7faff; }
+.executive-membership-movement > div { display: flex; flex-direction: column; gap: 3px; }
+.executive-membership-movement span { color: #68788b; font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.executive-membership-movement strong { color: #1f3d62; font-family: 'Manrope'; font-size: 15px; }
+.executive-membership-movement strong.positive { color: var(--green); }
+.executive-membership-movement strong.negative { color: var(--red); }
+.executive-membership-movement small { grid-column: 1 / -1; color: #68788b; font-size: 8px; }
 .executive-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
 .executive-facts:empty { display: none; }
 .executive-facts > div { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: 7px; background: #f5f7fa; }

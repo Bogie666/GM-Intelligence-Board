@@ -61,6 +61,13 @@ export interface ExecutiveScorecardFact {
   value: string;
 }
 
+export interface ExecutiveMembershipMovement {
+  periodLabel: string;
+  newCount: number;
+  lostCount: number;
+  netCount: number;
+}
+
 export interface ExecutiveScorecardCard {
   id: ExecutiveScorecardCardId;
   title: string;
@@ -77,6 +84,8 @@ export interface ExecutiveScorecardCard {
   asOf: string | null;
   budgetLineage: string | null;
   facts: ExecutiveScorecardFact[];
+  /** Optional, independently current MTD membership flows; never gates the active-member headline. */
+  membershipMovement: ExecutiveMembershipMovement | null;
   /** The governed source used for opening the existing insight drawer. */
   source: ProductionKpiStatus;
 }
@@ -466,7 +475,7 @@ function cardFromSource({
     percentValueScale: source.percentValueScale, comparisonValue: comparison && dataStatus !== "Unavailable" && selected.source && isFiniteValue(selected.source.comparisonValue) ? selected.source.comparisonValue : null,
     comparisonLabel: comparison && dataStatus !== "Unavailable" ? "vs PY (same local elapsed period)" : null,
     performanceStatus: "Not assessed", dataStatus, dataMessage: selected.message, periodLabel,
-    asOf: sourceAsOf(source as ExecutiveScorecardKpi), budgetLineage: null, facts, source,
+    asOf: sourceAsOf(source as ExecutiveScorecardKpi), budgetLineage: null, facts, membershipMovement: null, source,
   };
 }
 
@@ -507,7 +516,7 @@ export function shapeExecutiveScorecard({
     value: forecastDataStatus === "Unavailable" ? null : forecast, valueKind: "currency", percentValueScale: "whole", comparisonValue: budget?.amount ?? null,
     comparisonLabel: budget ? "monthly budget" : null, performanceStatus: attainmentStatus(forecast, budget?.amount ?? null), dataStatus: forecastDataStatus,
     dataMessage: forecastMessage, periodLabel, asOf: sourceAsOf(forecastSource as ExecutiveScorecardKpi), budgetLineage: budget?.lineage ?? null,
-    facts: [{ label: "Elapsed local calendar", value: fraction === null ? "Unavailable" : `${(fraction * 100).toFixed(1)}%` }, { label: "Monthly budget", value: budget ? formatProductionValue(budget.amount, "currency") : "Not published" }], source: forecastSource,
+    facts: [{ label: "Elapsed local calendar", value: fraction === null ? "Unavailable" : `${(fraction * 100).toFixed(1)}%` }, { label: "Monthly budget", value: budget ? formatProductionValue(budget.amount, "currency") : "Not published" }], membershipMovement: null, source: forecastSource,
   };
   const repair = cardFromSource({ id: "repair-volume", title: "Repair Volume vs PY", subtitle: "Completed repair jobs, using binding-pinned job-type IDs.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["repair-job-volume"], locationId, period, needsComparison: true }), valueKind: "number", comparison: true, periodLabel });
   const maintenanceCard = cardFromSource({ id: "maintenance-volume", title: "Maintenance Job Volume vs PY", subtitle: "Completed maintenance jobs, using binding-pinned job-type IDs.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["maintenance-job-volume"], locationId, period, needsComparison: true }), valueKind: "number", comparison: true, periodLabel });
@@ -515,7 +524,25 @@ export function shapeExecutiveScorecard({
   const close = cardFromSource({ id: "sales-close-rate", title: "Sales Close Rate", subtitle: "Sold opportunity jobs divided by opportunity jobs in the created-period cohort.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["sales-close"], locationId, period }), valueKind: "percent", periodLabel });
   const ticket = cardFromSource({ id: "sales-average-ticket", title: "Sales Average Ticket vs PY", subtitle: "Sold estimate-record subtotal divided by sold estimate-record count.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["sales-average-ticket"], locationId, period, needsComparison: true }), valueKind: "currency", comparison: true, periodLabel });
   const active = selectExecutiveSource({ kpis: executiveKpis, keys: ["active-members"], locationId, period, requiredWindow: "trailing" });
-  const membershipsCard = cardFromSource({ id: "active-memberships", title: "Active Memberships", subtitle: "Current active membership base from the governed membership source.", selected: active, valueKind: "number", periodLabel });
+  const movementPeriod = period ?? productionPeriodKey(active.source?.periodEnd ?? null);
+  const newMembers = selectExecutiveSource({ kpis: executiveKpis, keys: ["new-members"], locationId, period: movementPeriod, requiredWindow: "mtd" });
+  const lostMembers = selectExecutiveSource({ kpis: executiveKpis, keys: ["member-cancels"], locationId, period: movementPeriod, requiredWindow: "mtd" });
+  const netMembers = selectExecutiveSource({ kpis: executiveKpis, keys: ["membership-net"], locationId, period: movementPeriod, requiredWindow: "mtd" });
+  const currentMovementValue = (selected: SelectedExecutiveSource): number | null => {
+    const source = selected.source;
+    if (!source || !isFiniteValue(source.value) || (source.dataHealth ?? source.health) !== "current") return null;
+    return source.value;
+  };
+  const newCount = currentMovementValue(newMembers);
+  const lostCount = currentMovementValue(lostMembers);
+  const netCount = currentMovementValue(netMembers);
+  const membershipMovement = newCount !== null && lostCount !== null && netCount !== null && movementPeriod
+    ? { periodLabel: `MTD through ${localPeriodLabel(netMembers.source?.periodEnd ?? `${movementPeriod}T12:00:00.000Z`, timeZone)}`, newCount, lostCount, netCount }
+    : null;
+  const membershipsCard: ExecutiveScorecardCard = {
+    ...cardFromSource({ id: "active-memberships", title: "Active Memberships", subtitle: "Current active membership base from the governed membership source.", selected: active, valueKind: "number", periodLabel }),
+    membershipMovement,
+  };
   return [revenueCard, forecastCard, repair, maintenanceCard, opportunity, close, ticket, membershipsCard];
 }
 
