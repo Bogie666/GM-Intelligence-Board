@@ -130,6 +130,22 @@ a { color: inherit; text-decoration: none; }
 .card-open-hint span { margin-left: 4px; }
 .metric-card:hover .card-open-hint { opacity: 1; transform: translateY(0); }
 .metric-card:hover .metric-footer { padding-bottom: 15px; }
+.executive-scorecard-card { min-height: 330px; cursor: default; }
+.executive-statuses { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.executive-py-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 13px; padding: 10px; border: 1px solid #d7e2ee; border-radius: 8px; background: #f7faff; }
+.executive-py-comparison > div { display: flex; flex-direction: column; gap: 3px; }
+.executive-py-comparison span { color: #68788b; font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.executive-py-comparison strong { color: #1f3d62; font-family: 'Manrope'; font-size: 15px; }
+.executive-py-comparison strong.positive { color: var(--green); }
+.executive-py-comparison strong.negative { color: var(--red); }
+.executive-py-comparison small { grid-column: 1 / -1; color: #68788b; font-size: 8px; }
+.executive-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.executive-facts:empty { display: none; }
+.executive-facts > div { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: 7px; background: #f5f7fa; }
+.executive-facts span { color: #7a8797; font-size: 8px; }
+.executive-facts strong { color: #354255; font-size: 10px; }
+.executive-data-message { margin: 7px 0 0; color: #718095; font-size: 8px; line-height: 1.35; }
+.executive-card-action { margin-top: auto; padding: 9px 0 0; border: 0; background: transparent; color: #284f79; font-size: 9px; font-weight: 800; text-align: left; }
 .edit-actions { display: flex; align-items: center; gap: 5px; color: #708197; }
 .edit-actions button { width: 24px; height: 24px; border: 0; border-radius: 5px; display: grid; place-items: center; background: #f0f3f6; color: #778696; }
 .signal-strip.has-unavailable-sources { border-left-color: var(--amber); }

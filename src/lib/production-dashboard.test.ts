@@ -162,7 +162,7 @@ describe("production dashboard shaping", () => {
         executive("maintenance-job-volume", 30),
         executive("sales-opportunity-volume", 40),
         executive("sales-close", 0.5, { valueKind: "percent", percentValueScale: "ratio", comparisonBasis: "none", comparisonValue: null }),
-        executive("sales-average-ticket", 750, { valueKind: "currency", comparisonBasis: "none", comparisonValue: null }),
+        executive("sales-average-ticket", 750, { valueKind: "currency" }),
         executive("active-members", 200, { observationWindow: "trailing", observedAt: "2026-08-19T01:07:00.000Z", comparisonBasis: "none", comparisonValue: null }),
       ],
       budgets: [{ kpiKey: "revenue-mtd", locationId: "location-1", amount: 2000, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: "2026-08-31", lineage: "target-1" }],
@@ -174,6 +174,8 @@ describe("production dashboard shaping", () => {
     expect(cards.find((card) => card.id === "maintenance-volume")?.value).toBe(30);
     expect(cards.find((card) => card.id === "active-memberships")?.dataStatus).toBe("Current");
     expect(cards.find((card) => card.id === "repair-volume")?.comparisonValue).toBe(40);
+    expect(cards.find((card) => card.id === "sales-average-ticket")?.comparisonValue).toBe(740);
+    expect(cards.find((card) => card.id === "sales-average-ticket")?.comparisonLabel).toContain("PY");
     expect(cards.find((card) => card.id === "revenue-mtd")?.performanceStatus).toBe("Off Plan");
   });
 

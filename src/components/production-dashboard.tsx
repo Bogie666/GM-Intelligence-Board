@@ -81,6 +81,9 @@ function Sparkline({ kpi }: { kpi: ProductionKpiStatus }) {
 function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard; onOpen: () => void }) {
   const dataClass = card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical";
   const performanceClass = card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral";
+  const comparisonDelta = card.value !== null && card.comparisonValue !== null && Number.isFinite(card.value) && Number.isFinite(card.comparisonValue)
+    ? card.comparisonValue === 0 ? null : ((card.value - card.comparisonValue) / Math.abs(card.comparisonValue)) * 100
+    : null;
   return (
     <article className={`metric-card executive-scorecard-card status-${dataClass}`}>
       <div className="metric-card-topline" />
@@ -89,7 +92,14 @@ function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard
         <div className="executive-statuses"><span className={`status-pill ${performanceClass}`}>Performance: {card.performanceStatus}</span><span className={`status-pill ${dataClass}`}>Data: {card.dataStatus}</span></div>
       </div>
       <div className="metric-main"><div className="metric-value">{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</div></div>
-      <div className="metric-subtitle">{card.comparisonValue === null || !card.comparisonLabel ? card.subtitle : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel}`}</div>
+      {card.comparisonValue !== null && card.comparisonLabel ? (
+        <div className="executive-py-comparison" aria-label={`${card.title} prior-year comparison`}>
+          <div><span>Prior year</span><strong>{formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)}</strong></div>
+          <div><span>Change vs PY</span><strong className={comparisonDelta !== null && comparisonDelta < 0 ? "negative" : "positive"}>{comparisonDelta === null ? "N/A" : `${comparisonDelta > 0 ? "+" : ""}${comparisonDelta.toFixed(1)}%`}</strong></div>
+          <small>{card.comparisonLabel}</small>
+        </div>
+      ) : null}
+      <div className="metric-subtitle">{card.subtitle}</div>
       <div className="executive-facts">{card.facts.map((fact) => <div key={fact.label}><span>{fact.label}</span><strong>{fact.value}</strong></div>)}</div>
       <div className="production-period-label">{card.periodLabel}{card.asOf ? " · local as-of" : ""}</div>
       <p className="executive-data-message">{card.performanceStatus === "Not assessed" && (card.id === "revenue-mtd" || card.id === "run-rate-forecast") && !card.budgetLineage ? "No published budget; performance not assessed. " : ""}{card.dataMessage}</p>
