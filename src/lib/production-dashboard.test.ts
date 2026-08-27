@@ -89,6 +89,11 @@ describe("production dashboard shaping", () => {
     expect(ratioTrend?.changeLabel).toBe("+40.0% vs prior");
     expect(getProductionPriorTrend(kpi({ valueKind: "percent", value: 0.7, priorValue: 0 }))?.changeLabel)
       .toBe("+70% vs prior");
+    const governedPy = kpi({ priorValue: null, comparisonBasis: "prior_year_to_date", comparisonValue: 80 });
+    expect(getProductionPriorTrend(governedPy)?.priorLabel).toBe("$80.00");
+    expect(getProductionPriorTrend(governedPy)?.changeLabel).toBe("+25.0% vs prior");
+    expect(getProductionSparklinePoints(governedPy)).toBe("0,32 120,5");
+    expect(createProductionDashboardCsv([{ ...governedPy, periodAvailable: true }])).toContain("$100.00,$80.00,'+25.0% vs prior");
   });
 
   it("normalizes percentage sparkline geometry across source storage contracts", () => {

@@ -31,6 +31,7 @@ import {
   formatProductionPeriod,
   formatProductionValue,
   getProductionFreshness,
+  getProductionComparisonValue,
   getProductionPriorTrend,
   getProductionSparklinePoints,
   getSupportedProductionPeriods,
@@ -206,6 +207,8 @@ function InsightDrawer({ kpi, onClose }: { kpi: ProductionKpiStatus | null; onCl
   }, [kpi, onClose]);
 
   if (!kpi) return null;
+  const priorValue = getProductionComparisonValue(kpi);
+  const hasGovernedPy = kpi.comparisonBasis === "prior_year_to_date" && priorValue !== null;
   const trend = getProductionPriorTrend(kpi);
   const status = healthClass[kpi.health];
   return (
@@ -217,16 +220,10 @@ function InsightDrawer({ kpi, onClose }: { kpi: ProductionKpiStatus | null; onCl
         </div>
         <div className="drawer-kpis">
           <div><span>Actual</span><strong>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</strong></div>
-          <div><span>Prior</span><strong>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</strong></div>
+          <div><span>{hasGovernedPy ? "Prior year" : "Prior"}</span><strong>{formatProductionValue(priorValue, kpi.valueKind, kpi.percentValueScale)}</strong></div>
           <div><span>Change</span><strong>{trend?.changeLabel ?? "Unavailable"}</strong></div>
         </div>
-        <div className="drawer-chart"><div className="drawer-section-label">Current versus prior</div><Sparkline kpi={kpi} /></div>
-        <div className="drawer-section-label">GM playbook</div>
-        <div className="playbook-list">
-          <div className="playbook-step"><span>1</span><div><strong>Validate the signal</strong><p>Confirm the selected location, observation period, source health, and operational denominator before coaching to this KPI.</p></div></div>
-          <div className="playbook-step"><span>2</span><div><strong>Assign an owner</strong><p>Choose one accountable leader and one measurable action for the next operating huddle.</p></div></div>
-          <div className="playbook-step"><span>3</span><div><strong>Recheck the next observation</strong><p>Use the governed refresh cadence to verify that the action changed the operating signal.</p></div></div>
-        </div>
+        <div className="drawer-chart"><div className="drawer-section-label">{hasGovernedPy ? "Current versus prior year" : "Current versus prior"}</div><Sparkline kpi={kpi} /></div>
         <div className="data-definition service-titan-lineage"><ShieldCheck size={18} /><div><strong>Governed data lineage</strong><p>{kpi.sourceSystem} → approved tenant/location binding → materialized observation</p><dl className="lineage-facts"><div><dt>Location</dt><dd>{kpi.locationName}</dd></div><div><dt>Freshness</dt><dd>{getProductionFreshness(kpi)}</dd></div><div><dt>Source</dt><dd>{kpi.sourceStatus}</dd></div></dl></div></div>
       </aside>
     </div>
@@ -326,7 +323,7 @@ export function ProductionDashboard({
             : visibleKpis.map((kpi) => <KpiCard key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} kpi={kpi} onOpen={() => setSelectedKpi(kpi)} />)}</div>
           {!isExecutive && visibleKpis.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No KPIs available for this view</h3><p>{canAdminister ? "Complete KPI publication and source binding in Admin Center." : "Ask a tenant administrator to configure this dashboard."}</p>{canAdminister && <Link className="button secondary" href="/admin">Open Admin Center</Link>}</div>}
 
-          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll">{isExecutive ? <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Comparison</th><th>Period</th><th>Performance</th><th>Data</th></tr></thead><tbody>{executiveCards.map((card) => <tr key={card.id} onClick={() => setSelectedKpi(card.source)}><td><strong>{card.title}</strong><span>{card.subtitle}</span></td><td>{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</td><td>{card.comparisonValue === null ? "—" : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel ?? ""}`}</td><td>{card.periodLabel}</td><td><span className={`status-pill ${card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral"}`}>{card.performanceStatus}</span></td><td><span className={`status-pill ${card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical"}`}>{card.dataStatus}</span></td></tr>)}</tbody></table> : <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table>}</div></section>
+          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll">{isExecutive ? <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Comparison</th><th>Period</th><th>Performance</th><th>Data</th></tr></thead><tbody>{executiveCards.map((card) => <tr key={card.id} onClick={() => setSelectedKpi(card.source)}><td><strong>{card.title}</strong><span>{card.subtitle}</span></td><td>{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</td><td>{card.comparisonValue === null ? "—" : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel ?? ""}`}</td><td>{card.periodLabel}</td><td><span className={`status-pill ${card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral"}`}>{card.performanceStatus}</span></td><td><span className={`status-pill ${card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical"}`}>{card.dataStatus}</span></td></tr>)}</tbody></table> : <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(getProductionComparisonValue(kpi), kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table>}</div></section>
           <footer className="page-footer"><span>GM Intelligence Board · Production</span><span>Tenant-scoped observations. Data confidence and freshness are shown by source.</span></footer>
         </section>
       </main>

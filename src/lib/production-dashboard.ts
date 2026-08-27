@@ -216,16 +216,27 @@ export function formatProductionValue(
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: kind === "ratio" ? 2 : 0 }).format(value);
 }
 
+type ProductionComparisonInput = Pick<ProductionKpiStatus,
+  "priorValue" | "comparisonBasis" | "comparisonValue"
+>;
+
+/** Prefers the governed same-period comparison over a legacy prior observation. */
+export function getProductionComparisonValue(kpi: ProductionComparisonInput): number | null {
+  if (kpi.comparisonBasis === "prior_year_to_date" && kpi.comparisonValue !== null && kpi.comparisonValue !== undefined && Number.isFinite(kpi.comparisonValue)) {
+    return kpi.comparisonValue;
+  }
+  return kpi.priorValue !== null && Number.isFinite(kpi.priorValue) ? kpi.priorValue : null;
+}
+
 export function getProductionSparklinePoints(
-  kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "valueKind" | "percentValueScale">,
+  kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "comparisonBasis" | "comparisonValue" | "valueKind" | "percentValueScale">,
 ): string | null {
   if (kpi.value === null || !Number.isFinite(kpi.value)) return null;
   const normalize = (value: number) =>
     kpi.valueKind === "percent" && kpi.percentValueScale === "ratio" ? value * 100 : value;
   const currentValue = normalize(kpi.value);
-  const priorValue = kpi.priorValue === null || !Number.isFinite(kpi.priorValue)
-    ? currentValue
-    : normalize(kpi.priorValue);
+  const comparisonValue = getProductionComparisonValue(kpi);
+  const priorValue = comparisonValue === null ? currentValue : normalize(comparisonValue);
   const values = [priorValue, currentValue];
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -240,14 +251,15 @@ export interface ProductionPriorTrend {
   changeLabel: string;
 }
 
-export function getProductionPriorTrend(kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "valueKind" | "percentValueScale">): ProductionPriorTrend | null {
-  if (kpi.value === null || kpi.priorValue === null || !Number.isFinite(kpi.value) || !Number.isFinite(kpi.priorValue)) return null;
-  const difference = kpi.value - kpi.priorValue;
-  const percentage = kpi.priorValue === 0 ? null : (difference / Math.abs(kpi.priorValue)) * 100;
+export function getProductionPriorTrend(kpi: Pick<ProductionKpiStatus, "value" | "priorValue" | "comparisonBasis" | "comparisonValue" | "valueKind" | "percentValueScale">): ProductionPriorTrend | null {
+  const priorValue = getProductionComparisonValue(kpi);
+  if (kpi.value === null || priorValue === null || !Number.isFinite(kpi.value)) return null;
+  const difference = kpi.value - priorValue;
+  const percentage = priorValue === 0 ? null : (difference / Math.abs(priorValue)) * 100;
   return {
     direction: difference > 0 ? "up" : difference < 0 ? "down" : "flat",
     percentage,
-    priorLabel: formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale),
+    priorLabel: formatProductionValue(priorValue, kpi.valueKind, kpi.percentValueScale),
     changeLabel: percentage === null
       ? `${difference > 0 ? "+" : ""}${formatProductionValue(difference, kpi.valueKind, kpi.percentValueScale)} vs prior`
       : `${percentage > 0 ? "+" : ""}${percentage.toFixed(1)}% vs prior`,
@@ -273,12 +285,13 @@ function csvCell(value: string): string {
 export function createProductionDashboardCsv(rows: ReadonlyArray<ProductionDashboardKpi>): string {
   const headers = ["KPI", "Location", "Actual", "Prior", "Vs prior", "Period ended", "Observed", "Source", "Confidence", "Status", "Source status"];
   const body = rows.map((kpi) => {
+    const priorValue = getProductionComparisonValue(kpi);
     const trend = getProductionPriorTrend(kpi);
     return [
       kpi.title,
       kpi.locationName,
       formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale),
-      kpi.priorValue === null ? "Unavailable" : formatProductionValue(kpi.priorValue, kpi.valueKind, kpi.percentValueScale),
+      priorValue === null ? "Unavailable" : formatProductionValue(priorValue, kpi.valueKind, kpi.percentValueScale),
       trend?.changeLabel ?? "Unavailable",
       formatProductionPeriod(kpi.periodEnd),
       formatProductionDateTime(kpi.observedAt),
