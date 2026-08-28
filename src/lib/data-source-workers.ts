@@ -83,9 +83,13 @@ type DomoDatasetSource = {
   dataset_id: string;
   value_column: string | null;
   reduction: string;
+  period_mode: string;
   date_column: string | null;
+  month_column: string | null;
+  year_column: string | null;
   filter_column: string | null;
   filter_value: string | null;
+  expected_period_rows: number | null;
   lifecycle: string;
   status: string;
   canonical_source_fingerprint: string;
@@ -364,7 +368,7 @@ export async function inspectDomoDatasetSource(
 
   const source = await exactSingle<DomoDatasetSource>(
     client.from("domo_dataset_sources")
-      .select("id,organization_id,domo_connection_id,dataset_id,value_column,reduction,date_column,filter_column,filter_value,lifecycle,status,canonical_source_fingerprint")
+      .select("id,organization_id,domo_connection_id,dataset_id,value_column,reduction,period_mode,date_column,month_column,year_column,filter_column,filter_value,expected_period_rows,lifecycle,status,canonical_source_fingerprint")
       .eq("organization_id", organizationId)
       .eq("id", sourceId)
       .eq("status", "active")
@@ -404,7 +408,7 @@ export async function inspectDomoDatasetSource(
     fail("domo_source_inspection_failed", "Domo dataset source inspection failed.");
   }
 
-  const configuredColumns = [source.value_column, source.date_column, source.filter_column]
+  const configuredColumns = [source.value_column, source.date_column, source.month_column, source.year_column, source.filter_column]
     .filter((value): value is string => typeof value === "string" && value.length > 0);
   const exportedColumns = new Set(parsed.header);
   if (configuredColumns.some((column) => !exportedColumns.has(column))) {

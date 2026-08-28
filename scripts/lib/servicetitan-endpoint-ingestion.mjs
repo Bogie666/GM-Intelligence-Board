@@ -3,6 +3,9 @@ const CONTROL_PATTERN = /\p{Cc}/u;
 const ENDPOINT_PAGE_SIZE = 500;
 const MAX_ENDPOINT_PAGES = 200;
 const ENDPOINT_RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024;
+const MAX_SCHEDULED_PIPELINE_JOBS = 5_000;
+const MAX_SCHEDULED_PIPELINE_ESTIMATE_IDS = 5_000;
+const SCHEDULED_PIPELINE_ID_BATCH_SIZE = 50;
 
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
@@ -216,6 +219,203 @@ function includedJobTypeIdSet(parameterValues) {
 
 function itemIdKey(value) {
   return value === null || value === undefined ? null : String(value);
+}
+
+function governedProviderId(value, label) {
+  const id = itemIdKey(value);
+  if (!id || !/^[1-9][0-9]{0,17}$/.test(id)) {
+    fail("endpoint_response_invalid", `A scheduled job returned an invalid ${label}.`);
+  }
+  return id;
+}
+
+function boundedEstimateIds(job) {
+  const createdFrom = job.createdFromEstimateId === null || job.createdFromEstimateId === undefined
+    ? null
+    : governedProviderId(job.createdFromEstimateId, "created-from estimate ID");
+  const linked = job.estimateIds;
+  if (linked !== undefined && !Array.isArray(linked)) {
+    fail("endpoint_response_invalid", "A scheduled job returned malformed estimate IDs.");
+  }
+  const ids = new Set(createdFrom ? [createdFrom] : []);
+  for (const value of linked ?? []) ids.add(governedProviderId(value, "estimate ID"));
+  if (ids.size > 50) fail("scheduled_pipeline_estimate_limit", "A scheduled job exceeded the governed estimate-ID limit.");
+  return { createdFrom, ids: [...ids] };
+}
+
+async function fetchExactEndpointItemsByIds({ credentials, token, environment, tenantId, category, ids, options, errorCode }) {
+  const itemsById = new Map();
+  let pageCount = 0;
+  for (let index = 0; index < ids.length; index += SCHEDULED_PIPELINE_ID_BATCH_SIZE) {
+    const batch = ids.slice(index, index + SCHEDULED_PIPELINE_ID_BATCH_SIZE);
+    const requested = new Set(batch);
+    const result = await fetchEndpointItems({
+      credentials, token, environment, tenantId, category,
+      query: [["ids", batch.join(",")]], options,
+    });
+    pageCount += result.pageCount;
+    for (const item of result.items) {
+      const id = itemIdKey(item.id);
+      if (!id || !requested.has(id) || itemsById.has(id)) {
+        fail(errorCode, `ServiceTitan returned an unexpected or duplicate ${category} row.`);
+      }
+      itemsById.set(id, item);
+    }
+    if (batch.some((id) => !itemsById.has(id))) {
+      fail(errorCode, `ServiceTitan omitted a requested ${category} row.`);
+    }
+  }
+  return { itemsById, pageCount };
+}
+
+function validateScheduledEstimate(estimate) {
+  const status = statusName(estimate).trim().toLowerCase();
+  if (!status || typeof estimate.active !== "boolean" || typeof estimate.isChangeOrder !== "boolean") {
+    fail("scheduled_pipeline_estimate_invalid", "A referenced estimate returned malformed status, active, or change-order fields.");
+  }
+  const subtotal = toDecimal(estimate.subtotal, "Scheduled sold estimate subtotal");
+  return { status, subtotal };
+}
+
+async function executeScheduledSoldPipeline({ credentials, token, environment, tenantId, includedIds, period, options }) {
+  const timeZone = validatedLocationTimeZone(options?.timeZone);
+  const monthStart = localMonthStart(period.end, timeZone);
+  const monthEnd = nextLocalMonthStart(period.end, timeZone);
+  if (!(period.start.getTime() === monthStart.getTime() && period.start.getTime() < period.end.getTime() && period.end.getTime() < monthEnd.getTime())) {
+    fail("scheduled_pipeline_period_invalid", "Scheduled pipeline requires an active local month-to-date period before month-end.");
+  }
+  const jobResults = await Promise.all(["Scheduled", "InProgress"].map((jobStatus) => fetchEndpointItems({
+    credentials, token, environment, tenantId, category: "jobs",
+    query: [["jobStatus", jobStatus]], options,
+  })));
+  const jobsResult = {
+    items: jobResults.flatMap((result) => result.items),
+    pageCount: jobResults.reduce((total, result) => total + result.pageCount, 0),
+  };
+
+  const scheduledJobs = [];
+  const seenJobIds = new Set();
+  let excludedStatusJobs = 0;
+  let excludedUnscheduledJobs = 0;
+  for (const job of jobsResult.items) {
+    const jobId = itemIdKey(job.id);
+    const businessUnitId = itemIdKey(job.businessUnitId);
+    if (!jobId || !/^[1-9][0-9]{0,17}$/.test(jobId) || !businessUnitId || !/^[0-9]{1,18}$/.test(businessUnitId)) {
+      fail("endpoint_response_invalid", "A scheduled pipeline job returned an invalid job or business-unit ID.");
+    }
+    if (seenJobIds.has(jobId)) fail("endpoint_response_invalid", "ServiceTitan returned a duplicate scheduled pipeline job ID.");
+    seenJobIds.add(jobId);
+    if (!includedIds.has(businessUnitId)) continue;
+    if (typeof job.jobStatus !== "string" || !job.jobStatus.trim()) {
+      fail("endpoint_response_invalid", "A scheduled pipeline job is missing its status.");
+    }
+    if (!["scheduled", "inprogress"].includes(job.jobStatus.trim().toLowerCase())) {
+      excludedStatusJobs += 1;
+      continue;
+    }
+    const lastAppointmentId = itemIdKey(job.lastAppointmentId);
+    if (!lastAppointmentId) {
+      excludedUnscheduledJobs += 1;
+      continue;
+    }
+    if (!/^[1-9][0-9]{0,17}$/.test(lastAppointmentId)) {
+      fail("endpoint_response_invalid", "A scheduled pipeline job returned an invalid final appointment ID.");
+    }
+    scheduledJobs.push({ job, jobId, lastAppointmentId });
+    if (scheduledJobs.length > MAX_SCHEDULED_PIPELINE_JOBS) {
+      fail("scheduled_pipeline_job_limit", "Scheduled pipeline exceeded the governed candidate-job limit.");
+    }
+  }
+
+  const appointmentIds = [...new Set(scheduledJobs.map(({ lastAppointmentId }) => lastAppointmentId))];
+  const appointmentsResult = await fetchExactEndpointItemsByIds({
+    credentials, token, environment, tenantId, category: "appointments", ids: appointmentIds, options,
+    errorCode: "scheduled_pipeline_appointment_join_invalid",
+  });
+  const candidates = [];
+  for (const { job, jobId, lastAppointmentId } of scheduledJobs) {
+    const appointment = appointmentsResult.itemsById.get(lastAppointmentId);
+    if (typeof appointment.active !== "boolean" || typeof appointment.status !== "string" || !appointment.status.trim()) {
+      fail("endpoint_response_invalid", "A scheduled appointment returned malformed active/status fields.");
+    }
+    if (itemIdKey(appointment.jobId) !== jobId) {
+      fail("scheduled_pipeline_join_invalid", "The final appointment does not match its scheduled job.");
+    }
+    const completionTime = Date.parse(appointment.end);
+    if (!Number.isFinite(completionTime)) fail("endpoint_response_invalid", "A scheduled appointment is missing a valid completion timestamp.");
+    const appointmentStatus = appointment.status.trim().toLowerCase();
+    const governedAppointmentStatuses = new Set(["scheduled", "dispatched", "working", "hold", "done", "canceled"]);
+    if (!governedAppointmentStatuses.has(appointmentStatus)) {
+      fail("endpoint_response_invalid", "A scheduled appointment returned an unknown status.");
+    }
+    if (!appointment.active || !["scheduled", "dispatched", "working"].includes(appointmentStatus)
+      || completionTime <= period.end.getTime() || completionTime >= monthEnd.getTime()) continue;
+    const estimateContract = boundedEstimateIds(job);
+    if (estimateContract.ids.length === 0) continue;
+    candidates.push({ jobId, ...estimateContract });
+  }
+
+  const allEstimateIds = [...new Set(candidates.flatMap((candidate) => candidate.ids))];
+  if (allEstimateIds.length > MAX_SCHEDULED_PIPELINE_ESTIMATE_IDS) {
+    fail("scheduled_pipeline_estimate_limit", "Scheduled pipeline exceeded the governed estimate-ID limit.");
+  }
+  const estimatesResult = await fetchExactEndpointItemsByIds({
+    credentials, token, environment, tenantId, category: "estimates", ids: allEstimateIds, options,
+    errorCode: "scheduled_pipeline_estimate_join_invalid",
+  });
+  const validatedEstimates = new Map();
+  for (const [id, estimate] of estimatesResult.itemsById) {
+    validatedEstimates.set(id, { estimate, ...validateScheduledEstimate(estimate) });
+  }
+
+  const primaryScopes = new Map();
+  const countedSoldEstimateIds = new Set();
+  let total = new Decimal(0);
+  let scheduledSoldScopes = 0;
+  let duplicateEstimateJobLinks = 0;
+  let duplicateSoldEstimateLinks = 0;
+  for (const candidate of candidates) {
+    const estimates = candidate.ids.map((id) => validatedEstimates.get(id));
+    const sold = estimates.filter(({ status }) => status === "sold");
+    const soldNonChangeOrders = sold.filter(({ estimate }) => estimate.isChangeOrder === false);
+    const primary = candidate.createdFrom
+      ? sold.filter(({ estimate }) => itemIdKey(estimate.id) === candidate.createdFrom && estimate.isChangeOrder === false)
+      : soldNonChangeOrders;
+    if (primary.length === 0) continue;
+    if (primary.length !== 1 || soldNonChangeOrders.some(({ estimate }) => itemIdKey(estimate.id) !== itemIdKey(primary[0].estimate.id))) {
+      fail("scheduled_pipeline_ambiguous_estimate", "A scheduled job has more than one canonical sold estimate.");
+    }
+    const primaryId = itemIdKey(primary[0].estimate.id);
+    const scopeSignature = [...candidate.ids].sort().join(",");
+    const priorScope = primaryScopes.get(primaryId);
+    if (priorScope !== undefined) {
+      if (priorScope !== scopeSignature) {
+        fail("scheduled_pipeline_scope_conflict", "Jobs sharing a primary sold estimate returned inconsistent estimate scopes.");
+      }
+      duplicateEstimateJobLinks += 1;
+      continue;
+    }
+    primaryScopes.set(primaryId, scopeSignature);
+    for (const { estimate, subtotal } of sold) {
+      const estimateId = itemIdKey(estimate.id);
+      if (estimateId !== primaryId && estimate.isChangeOrder !== true) continue;
+      if (countedSoldEstimateIds.has(estimateId)) {
+        duplicateSoldEstimateLinks += 1;
+        continue;
+      }
+      countedSoldEstimateIds.add(estimateId);
+      total = total.plus(subtotal);
+    }
+    scheduledSoldScopes += 1;
+  }
+  return {
+    ...reducedResult(total), rowCount: scheduledSoldScopes, totalRowCount: jobsResult.items.length,
+    pageCount: jobsResult.pageCount + appointmentsResult.pageCount + estimatesResult.pageCount,
+    metricComponents: {
+      candidateJobs: candidates.length, scheduledSoldScopes, duplicateEstimateJobLinks,
+      duplicateSoldEstimateLinks, excludedStatusJobs, excludedUnscheduledJobs, rejectedAmbiguity: 0,
+    },
+  };
 }
 
 /**
@@ -551,6 +751,15 @@ export const ENDPOINT_RECIPE_EXECUTIONS = Object.freeze({
       return reducedResult(total);
     },
   },
+  "sold-estimates-value@2": {
+    category: "jobs",
+    supportsBusinessUnitFilter: true,
+    requiresBusinessUnitFilter: true,
+    businessUnitField: "businessUnitId",
+    query: () => [],
+    reduce: () => fail("scheduled_pipeline_executor_required", "Scheduled pipeline requires its governed multi-endpoint executor."),
+    execute: executeScheduledSoldPipeline,
+  },
   "sales-opportunity-count@1": {
     category: "estimates",
     supportsBusinessUnitFilter: true,
@@ -675,9 +884,37 @@ function zonedDateParts(instant, timeZone) {
   return result;
 }
 
-function validatedMembershipTimeZone(timeZone) {
+function validatedLocationTimeZone(timeZone) {
   zonedDateParts(new Date(0), timeZone);
   return timeZone;
+}
+
+function validatedMembershipTimeZone(timeZone) {
+  return validatedLocationTimeZone(timeZone);
+}
+
+function zonedWallClockToUtc({ year, month, day, hour = 0, minute = 0, second = 0 }, timeZone) {
+  let guess = Date.UTC(year, month - 1, day, hour, minute, second, 0);
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const observed = zonedDateParts(new Date(guess), timeZone);
+    const observedAsUtc = Date.UTC(observed.year, observed.month - 1, observed.day, observed.hour, observed.minute, observed.second, 0);
+    const target = Date.UTC(year, month - 1, day, hour, minute, second, 0);
+    const difference = target - observedAsUtc;
+    if (difference === 0) return new Date(guess);
+    guess += difference;
+  }
+  return new Date(guess);
+}
+
+function localMonthStart(instant, timeZone) {
+  const local = zonedDateParts(instant, timeZone);
+  return zonedWallClockToUtc({ year: local.year, month: local.month, day: 1 }, timeZone);
+}
+
+function nextLocalMonthStart(instant, timeZone) {
+  const local = zonedDateParts(instant, timeZone);
+  const next = local.month === 12 ? { year: local.year + 1, month: 1, day: 1 } : { year: local.year, month: local.month + 1, day: 1 };
+  return zonedWallClockToUtc(next, timeZone);
 }
 
 /** Converts a membership's date-only local event date to its exact UTC midnight. */
@@ -788,11 +1025,17 @@ export async function executeEndpointRecipe({
 }) {
   const execution = getEndpointRecipeExecution(recipeId, recipeVersion);
   const includedIds = businessUnitIdSet(businessUnitMappings ?? {});
+  if (execution.requiresBusinessUnitFilter && !includedIds) {
+    fail("business_unit_filter_required", `Endpoint recipe ${recipeId} v${recipeVersion} requires a non-empty includedBusinessUnitIds scope.`);
+  }
   if (includedIds && !execution.supportsBusinessUnitFilter) {
     fail("business_unit_filter_unsupported", `Endpoint recipe ${recipeId} v${recipeVersion} does not support business-unit filtering.`);
   }
   execution.validateOptions?.(options);
   const token = await obtainServiceTitanToken(credentials, environment, options);
+  if (typeof execution.execute === "function") {
+    return execution.execute({ credentials, token, environment, tenantId, includedIds, period, options });
+  }
   const { items, pageCount } = await fetchEndpointItems({
     credentials,
     token,

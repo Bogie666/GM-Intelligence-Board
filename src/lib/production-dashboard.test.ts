@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  createExecutiveScorecardCsv,
   createProductionDashboardCsv,
+  executiveSecondarySourceLineage,
   formatProductionPeriod,
   formatProductionValue,
   getProductionPriorTrend,
@@ -163,6 +165,10 @@ describe("production dashboard shaping", () => {
     const cards = shapeExecutiveScorecard({
       kpis: [
         executive("revenue-mtd", 1000, { comparisonBasis: "none", comparisonValue: null }),
+        executive("pipeline", 600, {
+          valueKind: "currency", comparisonBasis: "none", comparisonValue: null,
+          endpointRecipeId: "sold-estimates-value", endpointRecipeVersion: 2,
+        }),
         executive("repair-job-volume", 50),
         executive("maintenance-job-volume", 30),
         executive("sales-opportunity-volume", 40),
@@ -182,6 +188,80 @@ describe("production dashboard shaping", () => {
     expect(cards.find((card) => card.id === "sales-average-ticket")?.comparisonValue).toBe(740);
     expect(cards.find((card) => card.id === "sales-average-ticket")?.comparisonLabel).toContain("PY");
     expect(cards.find((card) => card.id === "revenue-mtd")?.performanceStatus).toBe("Off Plan");
+    const outlook = cards.find((card) => card.id === "run-rate-forecast");
+    expect(outlook?.title).toBe("Month-End Revenue Outlook vs Budget");
+    expect(outlook?.value).toBeCloseTo(1738.3177570093458, 8);
+    expect(outlook?.facts).toEqual(expect.arrayContaining([
+      { label: "Completed revenue MTD", value: "$1,000" },
+      { label: "Sold + scheduled pipeline", value: "$600.00" },
+      { label: "Committed revenue", value: "$1,600" },
+      { label: "Gap after committed", value: "$400.00" },
+    ]));
+    expect(outlook?.secondarySourceInsights).toEqual([expect.objectContaining({
+      label: "sold + scheduled pipeline",
+      dataStatus: "Current",
+      source: expect.objectContaining({
+        bindingId: "binding-pipeline",
+        endpointRecipeId: "sold-estimates-value",
+        endpointRecipeVersion: 2,
+      }),
+    })]);
+  });
+
+  it("keeps the pace forecast current while withholding a committed total from stale pipeline data", () => {
+    const cards = shapeExecutiveScorecard({
+      kpis: [
+        kpi({ kpiKey: "revenue-mtd", value: 1000, valueKind: "currency", observationWindow: "mtd", periodEnd: "2026-08-18T23:59:59.000Z" }),
+        kpi({
+          bindingId: "pipeline", kpiKey: "pipeline", value: 600, valueKind: "currency", observationWindow: "mtd",
+          periodEnd: "2026-08-18T23:59:59.000Z", health: "stale",
+          endpointRecipeId: "sold-estimates-value", endpointRecipeVersion: 2,
+        }),
+      ],
+      budgets: [{ kpiKey: "revenue-mtd", locationId: "location-1", amount: 2000, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: "2026-08-31", lineage: "target-1" }],
+      locationId: "location-1", timeZone: "America/Chicago", period: "2026-08-18",
+    });
+    const outlook = cards.find((card) => card.id === "run-rate-forecast");
+    expect(outlook?.dataStatus).toBe("Current");
+    expect(outlook?.facts).toEqual(expect.arrayContaining([
+      { label: "Sold + scheduled pipeline", value: "$600.00 · Stale" },
+      { label: "Committed revenue", value: "Unavailable" },
+      { label: "Gap after committed", value: "Unavailable" },
+    ]));
+    expect(outlook?.secondarySourceInsights).toEqual([expect.objectContaining({
+      dataStatus: "Stale",
+      source: expect.objectContaining({ bindingId: "pipeline", endpointRecipeVersion: 2 }),
+    })]);
+    expect(outlook && executiveSecondarySourceLineage(outlook)).toBe(
+      "sold + scheduled pipeline: Stale · ServiceTitan · sold-estimates-value@2",
+    );
+    expect(outlook && createExecutiveScorecardCsv([outlook])).toContain(
+      "sold + scheduled pipeline: Stale · ServiceTitan · sold-estimates-value@2",
+    );
+  });
+
+  it("rejects legacy sold-estimate observations from the scheduled-pipeline bridge", () => {
+    const outlook = shapeExecutiveScorecard({
+      kpis: [
+        kpi({ kpiKey: "revenue-mtd", value: 1000, observationWindow: "mtd" }),
+        kpi({
+          bindingId: "legacy-pipeline", kpiKey: "pipeline", value: 600, observationWindow: "mtd",
+          endpointRecipeId: "sold-estimates-value", endpointRecipeVersion: 1,
+        }),
+      ],
+      budgets: [{ kpiKey: "revenue-mtd", locationId: "location-1", amount: 2000, planningType: "budget", lifecycle: "published", effectiveStart: "2026-08-01", effectiveEnd: "2026-08-31", lineage: "target-1" }],
+      locationId: "location-1", timeZone: "America/Chicago", period: "2026-08-18",
+    }).find((card) => card.id === "run-rate-forecast");
+    expect(outlook?.facts).toEqual(expect.arrayContaining([
+      { label: "Sold + scheduled pipeline", value: "Unavailable" },
+      { label: "Committed revenue", value: "Unavailable" },
+    ]));
+    expect(outlook?.dataMessage).toContain("sold-estimates-value v2");
+    expect(outlook?.secondarySourceInsights).toEqual([expect.objectContaining({
+      dataStatus: "Unavailable",
+      source: null,
+      message: expect.stringContaining("sold-estimates-value v2"),
+    })]);
   });
 
   it("adds selected-period membership movement without changing the active-membership headline", () => {

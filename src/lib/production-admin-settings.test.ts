@@ -38,6 +38,14 @@ describe("endpoint recipe draft configuration", () => {
     });
   });
 
+  it("requires an explicit business-unit scope for scheduled pipeline v2", () => {
+    expect(validateEndpointRecipeBindingConfiguration("sold-estimates-value", 2, {}, {}))
+      .toMatchObject({ ok: false, fieldErrors: { businessUnitMappings: expect.stringContaining("requires") } });
+    expect(validateEndpointRecipeBindingConfiguration(
+      "sold-estimates-value", 2, {}, { includedBusinessUnitIds: [101, "202"] },
+    )).toEqual({ ok: true });
+  });
+
   it("keeps recipes with no parameter contract empty", () => {
     expect(validateEndpointRecipeBindingConfiguration("completed-revenue", 2, {}, {})).toEqual({ ok: true });
     expect(validateEndpointRecipeBindingConfiguration("completed-revenue", 2, { query: "browser-authored" }, {}))

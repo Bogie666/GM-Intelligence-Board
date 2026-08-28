@@ -327,9 +327,13 @@ export async function createDomoDatasetSourceAction(
     description: rawInput(formData, "description"),
     valueColumn: rawInput(formData, "valueColumn"),
     reduction: input(formData, "reduction"),
+    periodMode: input(formData, "periodMode"),
     dateColumn: rawInput(formData, "dateColumn"),
+    monthColumn: rawInput(formData, "monthColumn"),
+    yearColumn: rawInput(formData, "yearColumn"),
     filterColumn: rawInput(formData, "filterColumn"),
     filterValue: rawInput(formData, "filterValue"),
+    expectedPeriodRows: rawInput(formData, "expectedPeriodRows"),
   });
   const fieldErrors: Record<string, string> = validated.ok ? {} : { ...validated.fieldErrors };
   if (!validateUuid(connectionId)) fieldErrors.connectionId = "Choose a valid Domo connection.";
@@ -344,9 +348,13 @@ export async function createDomoDatasetSourceAction(
     p_description: validated.value.description,
     p_value_column: validated.value.valueColumn,
     p_reduction: validated.value.reduction,
+    p_period_mode: validated.value.periodMode,
     p_date_column: validated.value.dateColumn,
+    p_month_column: validated.value.monthColumn,
+    p_year_column: validated.value.yearColumn,
     p_filter_column: validated.value.filterColumn,
     p_filter_value: validated.value.filterValue,
+    p_expected_period_rows: validated.value.expectedPeriodRows,
   });
   if (!exactUuidRpcResult(data, error)) return databaseFailure("Domo dataset source", error);
   refreshAdmin();

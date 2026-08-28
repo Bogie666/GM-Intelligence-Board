@@ -93,6 +93,91 @@ test("Domo reduction applies filter, period window, and Decimal math", () => {
   assert.equal(latest.decimalValue, "0.15");
 });
 
+test("Domo date-only rows use the binding location timezone and ambiguous timestamps fail closed", () => {
+  const period = { start: new Date("2026-08-01T05:00:00.000Z"), end: new Date("2026-08-02T05:00:00.000Z") };
+  const contract = { datasetId: DATASET, valueColumn: "Amount", reduction: "sum", dateColumn: "Date", filterColumn: "Center", filterValue: "Dallas" };
+  const reduced = reduceDomoRows({
+    header: HEADER,
+    rows: [
+      ["Dallas", "10", "2026-07-31"],
+      ["Dallas", "20", "2026-08-01"],
+      ["Dallas", "30", "2026-08-02"],
+      ["Dallas", "5", "2026-08-01T00:30:00-05:00"],
+    ],
+    contract,
+    period,
+    timeZone: "America/Chicago",
+  });
+  assert.equal(reduced.decimalValue, "25");
+  assert.equal(reduced.rowCount, 2);
+  assert.throws(() => reduceDomoRows({
+    header: HEADER,
+    rows: [["Dallas", "20", "2026-08-01T12:00:00"]],
+    contract,
+    period,
+    timeZone: "America/Chicago",
+  }), (error) => error.code === "domo_period_value_invalid");
+});
+
+test("Domo month/year periods isolate mapped brands and enforce approved row cardinality", () => {
+  const header = ["Master Location", "Month", "Year", "Budget"];
+  const rows = [
+    ["Lex", "Aug", "2026", "2486921.00"],
+    ["Lyons", "August", "2026", "875000.00"],
+    ["Lex", "Jul", "2026", "2100000.00"],
+    ["Lex", "Aug", "2025", "1900000.00"],
+  ];
+  const period = { start: new Date("2026-08-01T05:00:00.000Z"), end: new Date("2026-08-29T01:00:00.000Z") };
+  const source = (filterValue) => ({
+    datasetId: DATASET,
+    valueColumn: "Budget",
+    reduction: "sum",
+    periodMode: "month_year",
+    dateColumn: null,
+    monthColumn: "Month",
+    yearColumn: "Year",
+    filterColumn: "Master Location",
+    filterValue,
+    expectedPeriodRows: 1,
+  });
+  const lex = reduceDomoRows({ header, rows, contract: source("Lex"), period, timeZone: "America/Chicago" });
+  const lyons = reduceDomoRows({ header, rows, contract: source("Lyons"), period, timeZone: "America/Chicago" });
+  assert.deepEqual(lex, { decimalValue: "2486921", decimalNumerator: null, decimalDenominator: null, rowCount: 1 });
+  assert.equal(lyons.decimalValue, "875000");
+  assert.throws(() => reduceDomoRows({
+    header,
+    rows: [...rows, ["Lex", "08", "2026", "1"]],
+    contract: source("Lex"), period, timeZone: "America/Chicago",
+  }), (error) => error.code === "domo_period_row_count_mismatch");
+});
+
+test("Domo month/year periods fail closed on malformed contracts and calendar values", () => {
+  const valid = {
+    datasetId: DATASET, valueColumn: "Budget", reduction: "sum", periodMode: "month_year",
+    dateColumn: null, monthColumn: "Month", yearColumn: "Year",
+    filterColumn: "Master Location", filterValue: "Lex", expectedPeriodRows: 1,
+  };
+  assert.throws(() => validateDomoDatasetContract({ ...valid, filterColumn: null, filterValue: null }), (error) => error.code === "domo_filter_invalid");
+  assert.throws(() => validateDomoDatasetContract({ ...valid, dateColumn: "Date" }), (error) => error.code === "domo_period_contract_invalid");
+  assert.throws(() => validateDomoDatasetContract({ ...valid, monthColumn: null }), (error) => error.code === "domo_month_column_invalid");
+  assert.throws(() => validateDomoDatasetContract({ ...valid, expectedPeriodRows: 0 }), (error) => error.code === "domo_expected_rows_invalid");
+  const args = {
+    header: ["Master Location", "Month", "Year", "Budget"],
+    contract: valid,
+    period: { start: new Date("2026-08-01T05:00:00.000Z"), end: new Date("2026-08-29T01:00:00.000Z") },
+    timeZone: "America/Chicago",
+  };
+  assert.throws(() => reduceDomoRows({ ...args, rows: [["Lex", "Smarch", "2026", "1"]] }), (error) => error.code === "domo_period_value_invalid");
+  assert.throws(() => reduceDomoRows({ ...args, rows: [["Lex", "Aug", "20X6", "1"]] }), (error) => error.code === "domo_period_value_invalid");
+  assert.throws(() => reduceDomoRows({ ...args, rows: [["Lex", "Aug", "2026", "1"]], timeZone: undefined }), (error) => error.code === "domo_timezone_invalid");
+  assert.throws(() => reduceDomoRows({
+    ...args,
+    rows: [["Lex", "Aug", "2026", "1"]],
+    period: { start: new Date("2026-08-02T05:00:00.000Z"), end: new Date("2026-08-29T01:00:00.000Z") },
+  }), (error) => error.code === "domo_period_alignment_invalid");
+  assert.throws(() => reduceDomoRows({ ...args, header: ["Master Location", "Year", "Budget"], rows: [["Lex", "2026", "1"]] }), (error) => error.code === "domo_month_column_missing");
+});
+
 test("latest reduction requires chronological identity and rejects conflicting ties", () => {
   assert.throws(() => validateDomoDatasetContract({ datasetId: DATASET, valueColumn: "Amount", reduction: "latest", dateColumn: null, filterColumn: null, filterValue: null }), (error) => error.code === "domo_date_column_invalid");
   assert.throws(() => reduceDomoRows({

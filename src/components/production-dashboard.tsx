@@ -22,12 +22,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ExecutiveSourceInsightActions } from "./executive-source-insight-actions";
 import { SignOutButton } from "@/components/sign-out-button";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import type { TenantAccessOption } from "@/lib/auth";
 import {
   createExecutiveScorecardCsv,
   createProductionDashboardCsv,
+  executiveSecondarySourceLineage,
   formatProductionPeriod,
   formatProductionValue,
   getProductionFreshness,
@@ -79,7 +81,7 @@ function Sparkline({ kpi }: { kpi: ProductionKpiStatus }) {
   );
 }
 
-function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard; onOpen: () => void }) {
+function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard; onOpen: (source: ProductionKpiStatus) => void }) {
   const dataClass = card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical";
   const performanceClass = card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral";
   const comparisonDelta = card.value !== null && card.comparisonValue !== null && Number.isFinite(card.value) && Number.isFinite(card.comparisonValue)
@@ -88,18 +90,23 @@ function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard
   const signedMembershipNet = card.membershipMovement
     ? `${card.membershipMovement.netCount > 0 ? "+" : ""}${formatProductionValue(card.membershipMovement.netCount, "number")}`
     : null;
+  const isBudgetComparison = card.comparisonLabel?.toLowerCase().includes("budget") === true;
+  const comparisonHeading = isBudgetComparison ? "Budget" : "Prior year";
+  const varianceHeading = isBudgetComparison ? "Variance to budget" : "Change vs PY";
+  const secondarySourceInsights = card.secondarySourceInsights ?? [];
+
   return (
     <article className={`metric-card executive-scorecard-card status-${dataClass}`}>
       <div className="metric-card-topline" />
       <div className="metric-head">
-        <div><div className="metric-label">{card.title}</div><div className="source-label"><span className="source-dot" />{card.source.sourceSystem}</div></div>
+        <div><div className="metric-label">{card.title}</div><div className="source-label"><span className="source-dot" />{secondarySourceInsights.length > 0 ? `${secondarySourceInsights.length + 1} governed sources` : card.source.sourceSystem}</div></div>
         <div className="executive-statuses"><span className={`status-pill ${performanceClass}`}>Performance: {card.performanceStatus}</span><span className={`status-pill ${dataClass}`}>Data: {card.dataStatus}</span></div>
       </div>
       <div className="metric-main"><div className="metric-value">{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</div></div>
       {card.comparisonValue !== null && card.comparisonLabel ? (
-        <div className="executive-py-comparison" aria-label={`${card.title} prior-year comparison`}>
-          <div><span>Prior year</span><strong>{formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)}</strong></div>
-          <div><span>Change vs PY</span><strong className={comparisonDelta !== null && comparisonDelta < 0 ? "negative" : "positive"}>{comparisonDelta === null ? "N/A" : `${comparisonDelta > 0 ? "+" : ""}${comparisonDelta.toFixed(1)}%`}</strong></div>
+        <div className="executive-py-comparison" aria-label={`${card.title} ${isBudgetComparison ? "budget" : "prior-year"} comparison`}>
+          <div><span>{comparisonHeading}</span><strong>{formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)}</strong></div>
+          <div><span>{varianceHeading}</span><strong className={comparisonDelta !== null && comparisonDelta < 0 ? "negative" : "positive"}>{comparisonDelta === null ? "N/A" : `${comparisonDelta > 0 ? "+" : ""}${comparisonDelta.toFixed(1)}%`}</strong></div>
           <small>{card.comparisonLabel}</small>
         </div>
       ) : null}
@@ -115,7 +122,12 @@ function ExecutiveScorecardCard({ card, onOpen }: { card: ExecutiveScorecardCard
       <div className="executive-facts">{card.facts.map((fact) => <div key={fact.label}><span>{fact.label}</span><strong>{fact.value}</strong></div>)}</div>
       <div className="production-period-label">{card.periodLabel}{card.asOf ? " · local as-of" : ""}</div>
       <p className="executive-data-message">{card.performanceStatus === "Not assessed" && (card.id === "revenue-mtd" || card.id === "run-rate-forecast") && !card.budgetLineage ? "No published budget; performance not assessed. " : ""}{card.dataMessage}</p>
-      <button className="executive-card-action" type="button" onClick={onOpen} aria-label={`Open ${card.title} insight`}>View insight <span aria-hidden="true">→</span></button>
+      <ExecutiveSourceInsightActions
+        primarySource={card.source}
+        primaryLabel={secondarySourceInsights.length > 0 ? "completed revenue" : null}
+        secondarySourceInsights={secondarySourceInsights}
+        onOpen={onOpen}
+      />
     </article>
   );
 }
@@ -330,11 +342,11 @@ export function ProductionDashboard({
           <div className={`signal-strip ${unavailableCount > 0 ? "has-unavailable-sources" : ""}`} aria-live="polite"><div className="signal-primary"><Activity size={18} /><div><strong>{unavailableCount > 0 ? `${unavailableCount} KPI${unavailableCount === 1 ? " is" : "s are"} unavailable` : staleCount > 0 ? `${staleCount} KPI${staleCount === 1 ? " needs" : "s need"} freshness review` : currentCount > 0 ? "All visible KPI sources are current" : "No governed observations are available"}</strong><span>{currentCount} current · {staleCount} stale · {unavailableCount} unavailable</span></div></div><div className="signal-legend"><span className="legend good" />Current <span className="legend watch" />Stale <span className="legend critical" />Unavailable</div></div>
 
           <div className="metric-grid">{isExecutive
-            ? executiveCards.map((card) => <ExecutiveScorecardCard key={card.id} card={card} onOpen={() => setSelectedKpi(card.source)} />)
+            ? executiveCards.map((card) => <ExecutiveScorecardCard key={card.id} card={card} onOpen={setSelectedKpi} />)
             : visibleKpis.map((kpi) => <KpiCard key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} kpi={kpi} onOpen={() => setSelectedKpi(kpi)} />)}</div>
           {!isExecutive && visibleKpis.length === 0 && <div className="empty-state"><BarChart3 size={28} /><h3>No KPIs available for this view</h3><p>{canAdminister ? "Complete KPI publication and source binding in Admin Center." : "Ask a tenant administrator to configure this dashboard."}</p>{canAdminister && <Link className="button secondary" href="/admin">Open Admin Center</Link>}</div>}
 
-          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll">{isExecutive ? <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Comparison</th><th>Period</th><th>Performance</th><th>Data</th></tr></thead><tbody>{executiveCards.map((card) => <tr key={card.id} onClick={() => setSelectedKpi(card.source)}><td><strong>{card.title}</strong><span>{card.subtitle}</span></td><td>{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</td><td>{card.comparisonValue === null ? "—" : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel ?? ""}`}</td><td>{card.periodLabel}</td><td><span className={`status-pill ${card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral"}`}>{card.performanceStatus}</span></td><td><span className={`status-pill ${card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical"}`}>{card.dataStatus}</span></td></tr>)}</tbody></table> : <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(getProductionComparisonValue(kpi), kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table>}</div></section>
+          <section className="detail-panel"><div className="panel-head"><div><span className="eyebrow">Manager detail</span><h2>{sectionMeta.label} scorecard</h2></div><button className="text-button" type="button" disabled={isExecutive ? executiveCards.length === 0 : visibleKpis.length === 0} onClick={exportScorecard}>Export CSV</button></div><div className="table-scroll">{isExecutive ? <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Comparison</th><th>Period</th><th>Performance</th><th>Data</th></tr></thead><tbody>{executiveCards.map((card) => <tr key={card.id} onClick={() => setSelectedKpi(card.source)}><td><strong>{card.title}</strong><span>{card.subtitle}</span></td><td>{formatProductionValue(card.value, card.valueKind, card.percentValueScale)}</td><td>{card.comparisonValue === null ? "—" : `${formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale)} ${card.comparisonLabel ?? ""}`}</td><td>{card.periodLabel}</td><td><span className={`status-pill ${card.performanceStatus === "On Plan" ? "good" : card.performanceStatus === "Watch" ? "watch" : card.performanceStatus === "Off Plan" ? "critical" : "neutral"}`}>{card.performanceStatus}</span></td><td><span className={`status-pill ${card.dataStatus === "Current" ? "good" : card.dataStatus === "Stale" ? "watch" : "critical"}`}>{card.dataStatus}</span>{card.secondarySourceInsights && card.secondarySourceInsights.length > 0 ? <span>{executiveSecondarySourceLineage(card)}</span> : null}</td></tr>)}</tbody></table> : <table className="score-table"><thead><tr><th>KPI</th><th>Actual</th><th>Prior</th><th>Vs prior</th><th>Period</th><th>Source</th><th>Status</th></tr></thead><tbody>{visibleKpis.map((kpi) => { const trend = getProductionPriorTrend(kpi); const status = healthClass[kpi.health]; return <tr key={`${kpi.kpiKey}:${kpi.bindingId ?? "unbound"}`} onClick={() => setSelectedKpi(kpi)}><td><strong>{kpi.title}</strong><span>{kpi.subtitle}</span></td><td>{formatProductionValue(kpi.value, kpi.valueKind, kpi.percentValueScale)}</td><td>{formatProductionValue(getProductionComparisonValue(kpi), kpi.valueKind, kpi.percentValueScale)}</td><td className={trend?.direction === "down" ? "negative" : "positive"}>{trend?.changeLabel ?? "—"}</td><td>{formatProductionPeriod(kpi.periodEnd)}</td><td><span className="table-source"><span className="source-dot" />{kpi.sourceSystem}</span></td><td><span className={`status-pill ${status}`}>{PRODUCTION_HEALTH_COPY[kpi.health]}</span></td></tr>; })}</tbody></table>}</div></section>
           <footer className="page-footer"><span>GM Intelligence Board · Production</span><span>Tenant-scoped observations. Data confidence and freshness are shown by source.</span></footer>
         </section>
       </main>

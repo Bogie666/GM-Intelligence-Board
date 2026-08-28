@@ -466,10 +466,13 @@ async function processDomoBinding(supabase, binding, dryRun) {
     return { outcome: "skipped-idempotent" };
   }
   const { data: source, error: sourceError } = await supabase.from("domo_dataset_sources")
-    .select("id, dataset_id, value_column, reduction, date_column, filter_column, filter_value, lifecycle, status")
+    .select("id, domo_connection_id, dataset_id, value_column, reduction, period_mode, date_column, month_column, year_column, filter_column, filter_value, expected_period_rows, lifecycle, status")
     .eq("organization_id", binding.organization_id).eq("id", binding.domo_dataset_source_id).maybeSingle();
   if (sourceError || !source) throw new WorkerError("source-unavailable", "The exact Domo dataset source is unavailable.");
   if (source.lifecycle !== "approved" || source.status !== "active") throw new WorkerError("source-not-approved", "The Domo dataset source is not approved and active.");
+  if (source.domo_connection_id !== binding.domo_connection_id) {
+    throw new WorkerError("source-connection-mismatch", "The Domo source and binding connection do not match.");
+  }
   const credentials = await resolveDomoSecret(supabase, binding.organization_id, binding.domo_connection_id);
   if (dryRun) return { outcome: "dry-run" };
   try {
@@ -479,11 +482,16 @@ async function processDomoBinding(supabase, binding, dryRun) {
         datasetId: source.dataset_id,
         valueColumn: source.value_column,
         reduction: source.reduction,
+        periodMode: source.period_mode,
         dateColumn: source.date_column,
+        monthColumn: source.month_column,
+        yearColumn: source.year_column,
         filterColumn: source.filter_column,
         filterValue: source.filter_value,
+        expectedPeriodRows: source.expected_period_rows,
       },
       period,
+      timeZone: binding.location_timezone,
     });
     const written = await writeObservation(supabase, {
       binding,

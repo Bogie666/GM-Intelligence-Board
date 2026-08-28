@@ -119,6 +119,33 @@ describe("Domo dataset source validation", () => {
     expect(validateDomoDatasetSourceInput({ ...validDataset, reduction: "latest", dateColumn: "Posted-Date" }).ok).toBe(true);
   });
 
+  it("supports portfolio-safe separate month/year contracts", () => {
+    const result = validateDomoDatasetSourceInput({
+      ...validDataset,
+      periodMode: "month_year",
+      dateColumn: "",
+      monthColumn: "Month",
+      yearColumn: "Year",
+      filterColumn: "Master Location",
+      filterValue: "Lex",
+      expectedPeriodRows: "1",
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        periodMode: "month_year",
+        monthColumn: "Month",
+        yearColumn: "Year",
+        filterColumn: "Master Location",
+        filterValue: "Lex",
+        expectedPeriodRows: 1,
+      },
+    });
+    expectSourceError(validateDomoDatasetSourceInput({ ...validDataset, periodMode: "month_year", dateColumn: "", monthColumn: "Month", yearColumn: "Year", filterColumn: "", filterValue: "" }), "filterColumn");
+    expectSourceError(validateDomoDatasetSourceInput({ ...validDataset, periodMode: "month_year", dateColumn: "", monthColumn: "", yearColumn: "Year" }), "monthColumn");
+    expectSourceError(validateDomoDatasetSourceInput({ ...validDataset, expectedPeriodRows: "0" }), "expectedPeriodRows");
+  });
+
   it("uses the deployed Domo column grammar for value, date, and filter columns", () => {
     const longest = `A${"b".repeat(119)}`;
     expect(validateDomoDatasetSourceInput({

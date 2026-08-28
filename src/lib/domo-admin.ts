@@ -1,9 +1,11 @@
 export const DOMO_DATASET_REDUCTIONS = ["sum", "average", "count", "latest"] as const;
+export const DOMO_PERIOD_MODES = ["none", "date", "month_year"] as const;
 export const DOMO_REFRESH_CADENCES = ["4h", "12h", "24h"] as const;
 export const BOUNDED_DECIMAL_MAX_LENGTH = 120;
 export const COMPLETED_PERIOD_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 
 export type DomoDatasetReduction = (typeof DOMO_DATASET_REDUCTIONS)[number];
+export type DomoPeriodMode = (typeof DOMO_PERIOD_MODES)[number];
 export type DomoRefreshCadence = (typeof DOMO_REFRESH_CADENCES)[number];
 
 export type DomoValidationResult<T> =
@@ -22,9 +24,13 @@ export interface DomoDatasetSourceInput {
   description: string;
   valueColumn: string | null;
   reduction: DomoDatasetReduction;
+  periodMode: DomoPeriodMode;
   dateColumn: string | null;
+  monthColumn: string | null;
+  yearColumn: string | null;
   filterColumn: string | null;
   filterValue: string | null;
+  expectedPeriodRows: number | null;
 }
 
 export interface DomoDatasetConfigurationInput extends DomoDatasetSourceInput {
@@ -56,9 +62,13 @@ export interface DomoDatasetSourceRecord {
   description: string;
   value_column: string | null;
   reduction: DomoDatasetReduction;
+  period_mode: DomoPeriodMode;
   date_column: string | null;
+  month_column: string | null;
+  year_column: string | null;
   filter_column: string | null;
   filter_value: string | null;
+  expected_period_rows: number | null;
   canonical_source_fingerprint: string;
   lifecycle: "draft" | "inspected" | "approved" | "archived";
   status: "active" | "archived";
@@ -136,61 +146,77 @@ export function validateDomoDatasetSourceInput(input: Record<string, unknown>): 
   const reduction = input.reduction;
   const valueColumn = optionalColumn(input.valueColumn);
   const dateColumn = optionalColumn(input.dateColumn);
+  const monthColumn = optionalColumn(input.monthColumn);
+  const yearColumn = optionalColumn(input.yearColumn);
+  const inferredPeriodMode = dateColumn ? "date" : "none";
+  const periodMode = input.periodMode === undefined || input.periodMode === "" ? inferredPeriodMode : input.periodMode;
   const filterColumn = optionalColumn(input.filterColumn);
   const rawFilterValue = input.filterValue;
   const filterValue = rawFilterValue === null || rawFilterValue === undefined || rawFilterValue === ""
     ? null
     : trimmedPrintableText(rawFilterValue);
+  const rawExpectedRows = input.expectedPeriodRows;
+  const expectedPeriodRows = rawExpectedRows === null || rawExpectedRows === undefined || rawExpectedRows === ""
+    ? null
+    : typeof rawExpectedRows === "string" && /^[1-9][0-9]{0,5}$/.test(rawExpectedRows)
+      ? Number(rawExpectedRows)
+      : typeof rawExpectedRows === "number" && Number.isSafeInteger(rawExpectedRows)
+        ? rawExpectedRows
+        : undefined;
 
   if (!datasetId) fieldErrors.datasetId = "Dataset ID must be a canonical Domo dataset GUID.";
   if (!name || name.length > 200) fieldErrors.name = "Name must contain 1 to 200 printable characters.";
-  if (description === null || description.length > 500) {
-    fieldErrors.description = "Description must contain at most 500 printable characters.";
-  }
-  if (!isDomoDatasetReduction(reduction)) {
-    fieldErrors.reduction = "Choose sum, average, count, or latest.";
-  }
+  if (description === null || description.length > 500) fieldErrors.description = "Description must contain at most 500 printable characters.";
+  if (!isDomoDatasetReduction(reduction)) fieldErrors.reduction = "Choose sum, average, count, or latest.";
 
   if (reduction === "count") {
     if (valueColumn !== null) fieldErrors.valueColumn = "Count reductions must not declare a value column.";
   } else if (reduction === "sum" || reduction === "average" || reduction === "latest") {
-    if (valueColumn === null || valueColumn === undefined) {
-      fieldErrors.valueColumn = "This reduction requires a valid value column of at most 120 characters.";
-    }
-  } else if (valueColumn === undefined) {
-    fieldErrors.valueColumn = "Value column must match the Domo column-name format.";
+    if (valueColumn === null || valueColumn === undefined) fieldErrors.valueColumn = "This reduction requires a valid value column of at most 120 characters.";
   }
   if (valueColumn === undefined) fieldErrors.valueColumn = "Value column must match the Domo column-name format.";
   if (dateColumn === undefined) fieldErrors.dateColumn = "Date column must match the Domo column-name format.";
-  if (reduction === "latest" && (dateColumn === null || dateColumn === undefined)) {
-    fieldErrors.dateColumn = "Latest reductions require a valid date column so the selected row is chronologically deterministic.";
+  if (monthColumn === undefined) fieldErrors.monthColumn = "Month column must match the Domo column-name format.";
+  if (yearColumn === undefined) fieldErrors.yearColumn = "Year column must match the Domo column-name format.";
+
+  if (!DOMO_PERIOD_MODES.includes(periodMode as DomoPeriodMode)) {
+    fieldErrors.periodMode = "Choose no period, date column, or separate month/year columns.";
+  } else if (periodMode === "none") {
+    if (dateColumn !== null || monthColumn !== null || yearColumn !== null) fieldErrors.periodMode = "No-period mode cannot declare date, month, or year columns.";
+  } else if (periodMode === "date") {
+    if (!dateColumn) fieldErrors.dateColumn = "Date period mode requires a valid date column.";
+    if (monthColumn !== null || yearColumn !== null) fieldErrors.periodMode = "Date period mode cannot declare month or year columns.";
+  } else if (periodMode === "month_year") {
+    if (dateColumn !== null) fieldErrors.periodMode = "Month/year period mode cannot declare a date column.";
+    if (!monthColumn) fieldErrors.monthColumn = "Month/year period mode requires a valid month column.";
+    if (!yearColumn) fieldErrors.yearColumn = "Month/year period mode requires a valid year column.";
+  }
+  if (reduction === "latest" && periodMode === "none") {
+    fieldErrors.periodMode = "Latest reductions require a chronological period contract.";
+    fieldErrors.dateColumn = "Latest reductions require a date or month/year period contract.";
   }
 
   const hasFilterColumn = filterColumn !== null;
   const hasFilterValue = filterValue !== null;
-  if (filterColumn === undefined) {
-    fieldErrors.filterColumn = "Filter column must match the Domo column-name format.";
-  }
+  if (filterColumn === undefined) fieldErrors.filterColumn = "Filter column must match the Domo column-name format.";
   if (hasFilterColumn !== hasFilterValue) {
     if (!hasFilterColumn) fieldErrors.filterColumn = "Filter column and filter value must be provided together.";
     if (!hasFilterValue) fieldErrors.filterValue = "Filter column and filter value must be provided together.";
   }
-  if (filterValue !== null && (filterValue === "" || filterValue.length > 200)) {
-    fieldErrors.filterValue = "Filter value must contain 1 to 200 printable characters.";
+  if (filterValue !== null && (filterValue === "" || filterValue.length > 200)) fieldErrors.filterValue = "Filter value must contain 1 to 200 printable characters.";
+  if (periodMode === "month_year" && (!hasFilterColumn || !hasFilterValue)) {
+    fieldErrors.filterColumn = "Month/year sources require an explicit per-brand or per-location mapped filter.";
+  }
+  if (expectedPeriodRows === undefined || (expectedPeriodRows !== null && (expectedPeriodRows < 1 || expectedPeriodRows > 250_000))) {
+    fieldErrors.expectedPeriodRows = "Expected period rows must be a whole number from 1 to 250000.";
   }
 
   if (
-    Object.keys(fieldErrors).length > 0
-    || !datasetId
-    || !name
-    || description === null
-    || !isDomoDatasetReduction(reduction)
-    || valueColumn === undefined
-    || dateColumn === undefined
-    || filterColumn === undefined
-  ) {
-    return { ok: false, fieldErrors };
-  }
+    Object.keys(fieldErrors).length > 0 || !datasetId || !name || description === null
+    || !isDomoDatasetReduction(reduction) || !DOMO_PERIOD_MODES.includes(periodMode as DomoPeriodMode)
+    || valueColumn === undefined || dateColumn === undefined || monthColumn === undefined || yearColumn === undefined
+    || filterColumn === undefined || expectedPeriodRows === undefined
+  ) return { ok: false, fieldErrors };
 
   return {
     ok: true,
@@ -200,9 +226,13 @@ export function validateDomoDatasetSourceInput(input: Record<string, unknown>): 
       description,
       valueColumn: reduction === "count" ? null : valueColumn,
       reduction,
+      periodMode: periodMode as DomoPeriodMode,
       dateColumn,
+      monthColumn,
+      yearColumn,
       filterColumn,
       filterValue,
+      expectedPeriodRows,
     },
   };
 }

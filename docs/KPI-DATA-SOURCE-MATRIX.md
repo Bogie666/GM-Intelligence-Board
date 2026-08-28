@@ -8,7 +8,7 @@
 | Historical financial actuals | Domo approved datasets | High after mapping | Dataset ID, center/date/account grain, sign convention, and reconciliation totals must be governed |
 | Revenue by trade/division | ServiceTitan + BU mapping | High | Each tenant uses different business-unit vocabulary |
 | Budgets and targets | Domo / CSV / ERP / planning tool | Medium | Standard ServiceTitan APIs are not a dependable portfolio budget source |
-| Actual + committed pipeline | ServiceTitan invoices + won estimates + scheduled jobs | High | Must define sold estimate join, period window, and completed-job exclusion |
+| Actual + committed pipeline | ServiceTitan jobs + appointments + referenced sold estimates | High | `sold-estimates-value@2` counts canonical sold subtotal once for active fulfillment work whose final active appointment is due after as-of and by local period-end; requires approved location/BU binding |
 | Month/year forecast | Derived | Medium | Requires governed model, remaining workdays, seasonality, capacity, and pipeline |
 | Appointments | ServiceTitan | High | Status, cancellation, recall, and department mappings vary |
 | Capacity utilization | ServiceTitan + schedule/employee config | Medium | Available hours and non-working time must be configured |
@@ -27,6 +27,9 @@
 ## Required tenant setup decisions
 
 ### Domo financial datasets
+
+The current evidence-based ranking and dataset IDs are documented in
+[`DOMO-EXECUTIVE-SOURCE-ASSESSMENT-2026-08-28.md`](./DOMO-EXECUTIVE-SOURCE-ASSESSMENT-2026-08-28.md).
 
 - approved dataset ID and business owner
 - center/location identifier mapping

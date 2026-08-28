@@ -96,10 +96,14 @@ export interface ProductionDomoDatasetSource {
   name: string;
   description: string;
   value_column: string | null;
-  reduction: string;
+  reduction: "sum" | "average" | "count" | "latest";
+  period_mode: "none" | "date" | "month_year";
   date_column: string | null;
+  month_column: string | null;
+  year_column: string | null;
   filter_column: string | null;
   filter_value: string | null;
+  expected_period_rows: number | null;
   lifecycle: string;
   status: string;
   inspected_at: string | null;
@@ -197,7 +201,7 @@ export async function loadProductionAdminSettings(
       .select("id, display_name, status, last_validated_at, last_error_code, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("domo_dataset_sources")
-      .select("id, domo_connection_id, dataset_id, name, description, value_column, reduction, date_column, filter_column, filter_value, lifecycle, status, inspected_at, updated_at")
+      .select("id, domo_connection_id, dataset_id, name, description, value_column, reduction, period_mode, date_column, month_column, year_column, filter_column, filter_value, expected_period_rows, lifecycle, status, inspected_at, updated_at")
       .eq("organization_id", organizationId).order("updated_at", { ascending: false }),
     supabase.from("custom_kpi_definitions")
       .select("id, kpi_key, title, type, value_kind, lifecycle, version, external_source")
@@ -330,6 +334,9 @@ export function validateEndpointRecipeBindingConfiguration(
   }
 
   const recipeKey = `${recipeId}@${recipeVersion}`;
+  if (recipeKey === "sold-estimates-value@2" && businessUnitMappings.includedBusinessUnitIds === undefined) {
+    fieldErrors.businessUnitMappings = "Sold + scheduled pipeline requires a non-empty includedBusinessUnitIds scope.";
+  }
   const parameterKeys = Object.keys(parameterValues);
   if (recipeKey === "completed-job-type-count@2") {
     if (parameterKeys.some((key) => key !== "includedJobTypeIds" && key !== "membershipRequired")) {
@@ -367,6 +374,9 @@ export function endpointRecipeConfigurationExample(recipeId: string, recipeVersi
   }
   if (`${recipeId}@${recipeVersion}` === "sales-close-rate@2") {
     return { parameterValues: { soldThreshold: 1.01 }, businessUnitMappings: {} };
+  }
+  if (`${recipeId}@${recipeVersion}` === "sold-estimates-value@2") {
+    return { parameterValues: {}, businessUnitMappings: { includedBusinessUnitIds: [] } };
   }
   return { parameterValues: {}, businessUnitMappings: {} };
 }

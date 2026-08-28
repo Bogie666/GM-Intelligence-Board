@@ -266,7 +266,7 @@ begin
      or not pg_catalog.has_function_privilege('authenticated',
        'public.archive_service_titan_custom_endpoint_source(uuid,uuid,integer)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated',
-       'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text)', 'EXECUTE')
+       'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text,text,text,text,integer)', 'EXECUTE')
      or not pg_catalog.has_function_privilege('authenticated',
        'public.archive_domo_dataset_source(uuid,uuid,integer)', 'EXECUTE')
      or pg_catalog.has_function_privilege('authenticated',
@@ -326,7 +326,7 @@ begin
            ('new-members', 'new-memberships', 2),
            ('member-cancels', 'canceled-memberships', 2),
            ('membership-net', 'membership-net-growth', 2),
-           ('pipeline', 'sold-estimates-value', 1),
+           ('pipeline', 'sold-estimates-value', 2),
            ('hvac-sales-appts', 'jobs-with-appointments-count', 1),
            ('plumbing-appts', 'jobs-with-appointments-count', 1),
           ('repair-job-volume', 'completed-job-type-count', 2),
@@ -449,7 +449,7 @@ begin
     into release_ready, release_marker
   from public.get_data_platform_release_readiness() readiness;
   if release_ready is distinct from true
-     or release_marker is distinct from '20260820002200_data_source_admin_hardening' then
+     or release_marker is distinct from '20260828000200_domo_month_year_period' then
     raise exception 'data-platform release readiness marker is incorrect: ready %, marker %', release_ready, release_marker;
   end if;
   select readiness.ready, readiness.release_marker
@@ -562,7 +562,7 @@ begin
       'public.disable_domo_connection(uuid,uuid,integer,integer)'::pg_catalog.regprocedure,
       'public.create_service_titan_custom_endpoint_source(uuid,uuid,text,text,text,text,jsonb,text,text,text)'::pg_catalog.regprocedure,
       'public.archive_service_titan_custom_endpoint_source(uuid,uuid,integer)'::pg_catalog.regprocedure,
-      'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text)'::pg_catalog.regprocedure,
+      'public.create_domo_dataset_source(uuid,uuid,text,text,text,text,text,text,text,text,text,text,text,integer)'::pg_catalog.regprocedure,
       'public.archive_domo_dataset_source(uuid,uuid,integer)'::pg_catalog.regprocedure,
       'public.get_portfolio_onboarding_release_readiness()'::pg_catalog.regprocedure,
       'public.create_portfolio_brand_organization(text,text)'::pg_catalog.regprocedure,
@@ -683,6 +683,7 @@ begin
       ('custom_kpi_definitions', 'custom_kpi_definition_approval_fields'),
       ('custom_kpi_location_bindings', 'custom_kpi_binding_approver_membership_fk'),
       ('custom_kpi_location_bindings', 'custom_kpi_binding_report_source_pin_check'),
+      ('custom_kpi_location_bindings', 'custom_kpi_scheduled_pipeline_v2_contract'),
       ('custom_kpi_binding_evidence', 'custom_kpi_binding_evidence_recorder_membership_fk'),
       ('kpi_observations', 'kpi_observations_idempotency_sha256_check'),
       ('kpi_targets', 'kpi_target_owner_membership_fk'),
@@ -743,6 +744,123 @@ begin
   end if;
 end
 $$;
+
+do $scheduled_pipeline_v2_catalog$
+begin
+  if (
+    select pg_catalog.count(*)
+    from public.service_titan_endpoint_recipe_refresh_policies
+    where endpoint_recipe_id = 'sold-estimates-value'
+      and endpoint_recipe_version = 2
+      and refresh_interval in ('30m', '1h', '4h', '24h')
+      and selectable_for_new_bindings
+  ) <> 4 or exists (
+    select 1
+    from public.service_titan_endpoint_recipe_refresh_policies
+    where endpoint_recipe_id = 'sold-estimates-value'
+      and endpoint_recipe_version = 2
+      and refresh_interval not in ('30m', '1h', '4h', '24h')
+  ) then
+    raise exception 'scheduled pipeline v2 governed refresh policies are incorrect';
+  end if;
+  if not exists (
+    select 1
+    from public.original_kpi_catalog
+    where catalog_version = 1 and kpi_key = 'pipeline'
+      and title = 'Committed Pipeline'
+      and source_system = 'ServiceTitan'
+      and source_readiness_requirement = 'service_titan_business_unit_mapping'
+      and endpoint_recipe_id = 'sold-estimates-value' and endpoint_recipe_version = 2
+      and default_refresh_cadence = '1h' and default_stale_after_hours = 24
+      and default_observation_window = 'mtd' and default_comparison_basis = 'none'
+      and presentation ->> 'requiresBusinessUnitMapping' = 'true'
+  ) then
+    raise exception 'scheduled pipeline v2 catalog wiring is incorrect';
+  end if;
+  if not exists (
+    select 1 from public.schema_releases
+    where release_marker = '20260828000100_scheduled_sold_pipeline_v2'
+  ) then
+    raise exception 'scheduled pipeline v2 release marker is missing';
+  end if;
+  if pg_catalog.strpos(
+       (
+         select pg_catalog.pg_get_constraintdef(constraint_record.oid)
+         from pg_catalog.pg_constraint constraint_record
+         join pg_catalog.pg_class relation on relation.oid = constraint_record.conrelid
+         join pg_catalog.pg_namespace namespace on namespace.oid = relation.relnamespace
+         where namespace.nspname = 'public'
+           and relation.relname = 'custom_kpi_location_bindings'
+           and constraint_record.conname = 'custom_kpi_scheduled_pipeline_v2_contract'
+       ),
+       'approval_status <> ''approved'''
+     ) = 0 then
+    raise exception 'scheduled pipeline v2 scope is not enforced at approval time';
+  end if;
+  if pg_catalog.strpos(
+       pg_catalog.pg_get_functiondef(
+         'public.enforce_executive_catalog_binding_contract()'::regprocedure
+       ),
+       '''pipeline'''
+     ) = 0 then
+    raise exception 'pipeline definition is not pinned by the Executive catalog binding trigger';
+  end if;
+end
+$scheduled_pipeline_v2_catalog$;
+
+do $domo_month_year_contract$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'domo_dataset_sources'
+      and column_name = 'period_mode' and data_type = 'text' and is_nullable = 'NO'
+  ) or not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'domo_dataset_sources'
+      and column_name = 'month_column' and data_type = 'text'
+  ) or not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'domo_dataset_sources'
+      and column_name = 'year_column' and data_type = 'text'
+  ) or not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'domo_dataset_sources'
+      and column_name = 'expected_period_rows' and data_type = 'integer'
+  ) then
+    raise exception 'Domo portfolio-safe period columns are missing or malformed';
+  end if;
+
+  if not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.domo_dataset_sources'::regclass
+      and conname = 'domo_dataset_sources_period_shape'
+  ) or not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.domo_dataset_sources'::regclass
+      and conname = 'domo_dataset_sources_month_year_mapped_filter'
+  ) then
+    raise exception 'Domo month/year fail-closed constraints are missing';
+  end if;
+
+  if pg_catalog.strpos(
+       pg_catalog.pg_get_functiondef('public.set_domo_dataset_source_fingerprint()'::regprocedure),
+       'expectedPeriodRows'
+     ) = 0
+     or pg_catalog.strpos(
+       pg_catalog.pg_get_functiondef('public.set_domo_dataset_source_fingerprint()'::regprocedure),
+       'monthColumn'
+     ) = 0 then
+    raise exception 'Domo month/year contract is absent from source fingerprints';
+  end if;
+
+  if not exists (
+    select 1 from public.schema_releases
+    where release_marker = '20260828000200_domo_month_year_period'
+  ) then
+    raise exception 'Domo month/year period release marker is missing';
+  end if;
+end
+$domo_month_year_contract$;
 
 do $location_region_catalog$
 begin

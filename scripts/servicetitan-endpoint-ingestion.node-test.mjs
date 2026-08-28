@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   EndpointIngestionError,
@@ -17,12 +18,47 @@ const PERIOD = {
   start: new Date("2026-08-01T00:00:00.000Z"),
   end: new Date("2026-08-02T00:00:00.000Z"),
 };
+const PIPELINE_PERIOD = {
+  start: new Date("2026-08-01T05:00:00.000Z"),
+  end: new Date("2026-08-02T00:00:00.000Z"),
+};
 const CREDENTIALS = { clientId: "client-id-123", clientSecret: "client-secret-123", appKey: "app-key-123" };
 const ORG = "e7000000-0000-4000-8000-000000000001";
 const BINDING = "e7000000-0000-4000-8000-000000000002";
 
 function jsonResponse(payload) {
   return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function jobStatusResponse(items) {
+  return (url) => {
+    const requestedStatus = new URL(url).searchParams.get("jobStatus")?.trim().toLowerCase();
+    return jsonResponse({
+      page: 1,
+      pageSize: 500,
+      hasMore: false,
+      data: items.filter((item) => item.jobStatus.trim().toLowerCase() === requestedStatus),
+    });
+  };
+}
+
+async function runScheduledPipelineFixture({ jobs, appointments, estimates, period = PIPELINE_PERIOD }) {
+  const { fetchImpl } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse(jobs)],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: appointments })],
+    ["/sales/v2/tenant/tenant-1/estimates", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: estimates })],
+  ]);
+  return executeEndpointRecipe({
+    credentials: CREDENTIALS,
+    environment: "production",
+    tenantId: "tenant-1",
+    recipeId: "sold-estimates-value",
+    recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] },
+    period,
+    options: { fetchImpl, timeZone: "America/Chicago" },
+  });
 }
 
 function fetchStub(routes) {
@@ -57,9 +93,21 @@ test("every migration-owned recipe version has an execution contract and categor
       "inbound-call-booking-rate@1", "inbound-call-booking-rate@2", "inbound-call-booking-rate@3", "inbound-calls-booked@1",
       "inbound-calls-count@1", "inbound-calls-not-booked@1", "jobs-with-appointments-count@1",
       "membership-net-growth@1", "membership-net-growth@2", "new-memberships@1", "new-memberships@2", "sales-close-rate@1", "sales-close-rate@2",
-      "sales-opportunity-count@1", "sold-estimate-average-ticket@1", "sold-estimates-value@1",
+      "sales-opportunity-count@1", "sold-estimate-average-ticket@1", "sold-estimates-value@1", "sold-estimates-value@2",
     ],
   );
+});
+
+test("scheduled pipeline migration targets the current governed schema", () => {
+  const sql = readFileSync(new URL("../supabase/migrations/20260828000100_scheduled_sold_pipeline_v2.sql", import.meta.url), "utf8");
+  assert.match(sql, /service_titan_endpoint_recipe_refresh_policies/);
+  assert.match(sql, /refresh_interval/);
+  assert.match(sql, /selectable_for_new_bindings/);
+  assert.match(sql, /custom_kpi_location_bindings/);
+  assert.match(sql, /business_unit_mappings/);
+  assert.match(sql, /endpoint_recipe_id = 'sold-estimates-value'/);
+  assert.doesNotMatch(sql, /servicetitan_endpoint_recipe_refresh_policies/);
+  assert.doesNotMatch(sql, /servicetitan_endpoint_recipe_parameter_policies/);
 });
 
 test("unknown recipes fail closed", () => {
@@ -107,6 +155,224 @@ test("completed-revenue recipe sums invoice totals with Decimal precision", asyn
   const listCall = calls.find((call) => call.url.includes("/invoices"));
   assert.match(listCall.url, /invoicedOnOrAfter=2026-08-01T00%3A00%3A00.000Z/);
   assert.match(listCall.url, /pageSize=500/);
+});
+
+test("scheduled sold pipeline v2 sums one canonical sold estimate per active job due by local month-end", async () => {
+  const period = { start: new Date("2026-08-01T05:00:00.000Z"), end: new Date("2026-08-10T18:00:00.000Z") };
+  const { fetchImpl, calls } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse([
+      { id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, lastAppointmentId: 101 },
+      { id: 2, businessUnitId: 42, jobStatus: "Hold", createdFromEstimateId: 202, lastAppointmentId: 102 },
+      { id: 3, businessUnitId: 42, jobStatus: "Completed", createdFromEstimateId: 203, lastAppointmentId: 103 },
+      { id: 4, businessUnitId: 77, jobStatus: "Scheduled", createdFromEstimateId: 204, lastAppointmentId: 104 },
+      { id: 5, businessUnitId: 42, jobStatus: "InProgress", createdFromEstimateId: 205, lastAppointmentId: 105 },
+    ])],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 101, jobId: 1, active: true, status: "Scheduled", start: "2026-08-20T13:00:00Z", end: "2026-08-20T21:00:00Z" },
+      { id: 105, jobId: 5, active: true, status: "Hold", start: "2026-08-20T13:00:00Z", end: "2026-08-20T21:00:00Z" },
+    ] })],
+    ["/sales/v2/tenant/tenant-1/estimates", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 201, status: { name: "Sold" }, active: true, isChangeOrder: false, subtotal: "1000.25" },
+    ] })],
+  ]);
+  const result = await executeEndpointRecipe({
+    credentials: CREDENTIALS, environment: "production", tenantId: "tenant-1",
+    recipeId: "sold-estimates-value", recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] }, period,
+    options: { fetchImpl, timeZone: "America/Chicago" },
+  });
+  assert.equal(result.decimalValue, "1000.25");
+  assert.equal(result.rowCount, 1);
+  assert.deepEqual(result.metricComponents, {
+    candidateJobs: 1, scheduledSoldScopes: 1, duplicateEstimateJobLinks: 0,
+    duplicateSoldEstimateLinks: 0, excludedStatusJobs: 0, excludedUnscheduledJobs: 0, rejectedAmbiguity: 0,
+  });
+  const jobsCalls = calls.filter((call) => call.url.includes("/jobs"));
+  assert.equal(jobsCalls.length, 2);
+  assert.ok(jobsCalls.some((call) => call.url.includes("jobStatus=Scheduled")));
+  assert.ok(jobsCalls.some((call) => call.url.includes("jobStatus=InProgress")));
+  const appointmentCall = calls.find((call) => call.url.includes("/appointments"));
+  assert.match(appointmentCall.url, /ids=101%2C105/);
+  const estimateCall = calls.find((call) => call.url.includes("/estimates"));
+  assert.match(estimateCall.url, /ids=201/);
+});
+
+test("scheduled sold pipeline v2 counts a shared sold estimate once across fulfillment jobs", async () => {
+  const { fetchImpl } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse([
+      { id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, lastAppointmentId: 101 },
+      { id: 2, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, lastAppointmentId: 102 },
+    ])],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-08-20T21:00:00Z" },
+      { id: 102, jobId: 2, active: true, status: "Scheduled", end: "2026-08-21T21:00:00Z" },
+    ] })],
+    ["/sales/v2/tenant/tenant-1/estimates", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 201, status: { name: "Sold" }, active: true, isChangeOrder: false, subtotal: "1000" },
+    ] })],
+  ]);
+  const result = await executeEndpointRecipe({
+    credentials: CREDENTIALS, environment: "production", tenantId: "tenant-1",
+    recipeId: "sold-estimates-value", recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] }, period: PIPELINE_PERIOD,
+    options: { fetchImpl, timeZone: "America/Chicago" },
+  });
+  assert.equal(result.decimalValue, "1000");
+  assert.equal(result.rowCount, 1);
+  assert.equal(result.metricComponents.duplicateEstimateJobLinks, 1);
+});
+
+test("scheduled sold pipeline v2 requires an explicit BU scope before provider access", async () => {
+  let providerCalled = false;
+  await assert.rejects(executeEndpointRecipe({
+    credentials: CREDENTIALS, environment: "production", tenantId: "tenant-1",
+    recipeId: "sold-estimates-value", recipeVersion: 2,
+    businessUnitMappings: {}, period: PIPELINE_PERIOD,
+    options: { timeZone: "America/Chicago", fetchImpl: async () => { providerCalled = true; throw new Error("unexpected"); } },
+  }), (error) => error.code === "business_unit_filter_required");
+  assert.equal(providerCalled, false);
+});
+
+test("scheduled sold pipeline v2 fails closed when an exact appointment or estimate join is missing", async () => {
+  const jobs = [{ id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, lastAppointmentId: 101 }];
+  const base = {
+    credentials: CREDENTIALS, environment: "production", tenantId: "tenant-1",
+    recipeId: "sold-estimates-value", recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] }, period: PIPELINE_PERIOD,
+  };
+  const { fetchImpl: missingAppointment } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse(jobs)],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [] })],
+  ]);
+  await assert.rejects(executeEndpointRecipe({ ...base, options: { fetchImpl: missingAppointment, timeZone: "America/Chicago" } }),
+    (error) => error.code === "scheduled_pipeline_appointment_join_invalid");
+
+  const { fetchImpl: missingEstimate } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse(jobs)],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-08-20T21:00:00Z" },
+    ] })],
+    ["/sales/v2/tenant/tenant-1/estimates", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [] })],
+  ]);
+  await assert.rejects(executeEndpointRecipe({ ...base, options: { fetchImpl: missingEstimate, timeZone: "America/Chicago" } }),
+    (error) => error.code === "scheduled_pipeline_estimate_join_invalid");
+});
+
+test("scheduled sold pipeline v2 rejects inconsistent scopes for a shared primary estimate", async () => {
+  const { fetchImpl } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", jobStatusResponse([
+      { id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, estimateIds: [202], lastAppointmentId: 101 },
+      { id: 2, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, estimateIds: [203], lastAppointmentId: 102 },
+    ])],
+    ["/jpm/v2/tenant/tenant-1/appointments", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-08-20T21:00:00Z" },
+      { id: 102, jobId: 2, active: true, status: "Scheduled", end: "2026-08-21T21:00:00Z" },
+    ] })],
+    ["/sales/v2/tenant/tenant-1/estimates", () => jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [
+      { id: 201, status: { name: "Sold" }, active: true, isChangeOrder: false, subtotal: "1000" },
+      { id: 202, status: { name: "Sold" }, active: true, isChangeOrder: true, subtotal: "100" },
+      { id: 203, status: { name: "Sold" }, active: true, isChangeOrder: true, subtotal: "200" },
+    ] })],
+  ]);
+  await assert.rejects(executeEndpointRecipe({
+    credentials: CREDENTIALS, environment: "production", tenantId: "tenant-1",
+    recipeId: "sold-estimates-value", recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] }, period: PIPELINE_PERIOD,
+    options: { fetchImpl, timeZone: "America/Chicago" },
+  }), (error) => error.code === "scheduled_pipeline_scope_conflict");
+});
+
+test("scheduled sold pipeline v2 enforces exact MTD/month-end boundaries", async () => {
+  await assert.rejects(runScheduledPipelineFixture({
+    jobs: [], appointments: [], estimates: [],
+    period: { start: new Date("2026-08-01T05:00:00.001Z"), end: PIPELINE_PERIOD.end },
+  }), (error) => error.code === "scheduled_pipeline_period_invalid");
+
+  const result = await runScheduledPipelineFixture({
+    jobs: [{ id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, lastAppointmentId: 101 }],
+    appointments: [{ id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-09-01T05:00:00.000Z" }],
+    estimates: [],
+  });
+  assert.equal(result.decimalValue, "0");
+  assert.equal(result.rowCount, 0);
+});
+
+test("scheduled sold pipeline v2 includes inactive sold records and deduplicates shared change orders globally", async () => {
+  const result = await runScheduledPipelineFixture({
+    jobs: [
+      { id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId: 201, estimateIds: [203], lastAppointmentId: 101 },
+      { id: 2, businessUnitId: 42, jobStatus: "InProgress", createdFromEstimateId: 202, estimateIds: [203], lastAppointmentId: 102 },
+    ],
+    appointments: [
+      { id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-08-20T21:00:00Z" },
+      { id: 102, jobId: 2, active: true, status: "Working", end: "2026-08-21T21:00:00Z" },
+    ],
+    estimates: [
+      { id: 201, status: { name: "Sold" }, active: false, isChangeOrder: false, subtotal: "1000" },
+      { id: 202, status: { name: "Sold" }, active: true, isChangeOrder: false, subtotal: "2000" },
+      { id: 203, status: { name: "Sold" }, active: true, isChangeOrder: true, subtotal: "100" },
+    ],
+  });
+  assert.equal(result.decimalValue, "3100");
+  assert.equal(result.rowCount, 2);
+  assert.equal(result.metricComponents.duplicateSoldEstimateLinks, 1);
+});
+
+test("scheduled sold pipeline v2 rejects unknown appointment statuses", async () => {
+  await assert.rejects(runScheduledPipelineFixture({
+    jobs: [{ id: 1, businessUnitId: 42, jobStatus: "Scheduled", lastAppointmentId: 101, createdFromEstimateId: 201, estimateIds: [] }],
+    appointments: [{ id: 101, jobId: 1, active: true, status: "Rescheduled", start: "2026-08-20T13:00:00Z", end: "2026-08-20T21:00:00Z" }],
+    estimates: [],
+  }), (error) => error instanceof EndpointIngestionError
+    && error.code === "endpoint_response_invalid"
+    && error.message === "A scheduled appointment returned an unknown status.");
+});
+
+test("scheduled sold pipeline v2 rejects malformed and oversized originating estimate IDs", async () => {
+  for (const createdFromEstimateId of ["not-an-id", "1".repeat(19)]) {
+    await assert.rejects(runScheduledPipelineFixture({
+      jobs: [{ id: 1, businessUnitId: 42, jobStatus: "Scheduled", createdFromEstimateId, lastAppointmentId: 101 }],
+      appointments: [{ id: 101, jobId: 1, active: true, status: "Scheduled", end: "2026-08-20T21:00:00Z" }],
+      estimates: [],
+    }), (error) => error.code === "endpoint_response_invalid");
+  }
+});
+
+test("scheduled sold pipeline v2 bounds its scoped candidate-job cohort", async () => {
+  const jobs = Array.from({ length: 5_001 }, (_, index) => ({
+    id: index + 1,
+    businessUnitId: 42,
+    jobStatus: "Scheduled",
+    createdFromEstimateId: index + 10_000,
+    lastAppointmentId: index + 20_000,
+  }));
+  const { fetchImpl } = fetchStub([
+    tokenRoute,
+    ["/jpm/v2/tenant/tenant-1/jobs", (url) => {
+      const query = new URL(url).searchParams;
+      if (query.get("jobStatus") === "InProgress") {
+        return jsonResponse({ page: 1, pageSize: 500, hasMore: false, data: [] });
+      }
+      const page = Number(query.get("page"));
+      const data = jobs.slice((page - 1) * 500, page * 500);
+      return jsonResponse({ page, pageSize: 500, hasMore: page < 11, data });
+    }],
+  ]);
+  await assert.rejects(executeEndpointRecipe({
+    credentials: CREDENTIALS,
+    environment: "production",
+    tenantId: "tenant-1",
+    recipeId: "sold-estimates-value",
+    recipeVersion: 2,
+    businessUnitMappings: { includedBusinessUnitIds: [42] },
+    period: PIPELINE_PERIOD,
+    options: { fetchImpl, timeZone: "America/Chicago" },
+  }), (error) => error.code === "scheduled_pipeline_job_limit");
 });
 
 test("sales-close-rate recipe computes a governed ratio and rejects zero denominators", async () => {

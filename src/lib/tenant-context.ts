@@ -247,6 +247,8 @@ export interface ProductionKpiStatus {
   comparisonValue?: number | null;
   comparisonPeriodStart?: string | null;
   comparisonPeriodEnd?: string | null;
+  endpointRecipeId?: string | null;
+  endpointRecipeVersion?: number | null;
 }
 
 /** Published, effective-dated planning input. Dashboard code decides whether it applies to an observation. */
@@ -562,7 +564,7 @@ async function loadProductionKpis(
       .select("id, kpi_key, title, section, value_kind, stale_after_hours, external_source")
       .eq("organization_id", organizationId).eq("lifecycle", "published"),
     supabase.from("custom_kpi_location_bindings")
-      .select("id, kpi_definition_id, location_id, source_method, refresh_interval, observation_window, comparison_basis, canonical_source_fingerprint")
+      .select("id, kpi_definition_id, location_id, source_method, endpoint_recipe_id, endpoint_recipe_version, refresh_interval, observation_window, comparison_basis, canonical_source_fingerprint")
       .eq("organization_id", organizationId).eq("approval_status", "approved"),
   ]);
   if (catalogResult.error || definitionsResult.error || bindingsResult.error) return null;
@@ -580,6 +582,8 @@ async function loadProductionKpis(
   const bindings = bindingsResult.data as Array<{
     id: string; kpi_definition_id: string; location_id: string;
     source_method: GovernedKpiSourceMethod;
+    endpoint_recipe_id: string | null;
+    endpoint_recipe_version: number | null;
     refresh_interval: string | null;
     observation_window: "trailing" | "today" | "mtd" | "ytd";
     comparison_basis: "none" | "prior_year_to_date";
@@ -656,6 +660,8 @@ async function loadProductionKpis(
           percentValueScale: getPercentValueScaleForSourceMethod(binding.source_method),
           observationWindow: binding.observation_window,
           comparisonBasis: binding.comparison_basis,
+          endpointRecipeId: binding.source_method === "endpoint_recipe" ? binding.endpoint_recipe_id : null,
+          endpointRecipeVersion: binding.source_method === "endpoint_recipe" ? binding.endpoint_recipe_version : null,
           locationId: location.id,
           locationName: location.display_name,
           sourceStatus: binding.canonical_source_fingerprint ? "Approved governed source" : "Source fingerprint required",

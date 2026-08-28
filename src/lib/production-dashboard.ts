@@ -68,6 +68,14 @@ export interface ExecutiveMembershipMovement {
   netCount: number;
 }
 
+/** An independently governed input to a composite card, with its own drawer eligibility. */
+export interface ExecutiveScorecardSourceInsight {
+  label: string;
+  dataStatus: ExecutiveDataStatus;
+  message: string;
+  source: ProductionKpiStatus | null;
+}
+
 export interface ExecutiveScorecardCard {
   id: ExecutiveScorecardCardId;
   title: string;
@@ -88,6 +96,8 @@ export interface ExecutiveScorecardCard {
   membershipMovement: ExecutiveMembershipMovement | null;
   /** The governed source used for opening the existing insight drawer. */
   source: ProductionKpiStatus;
+  /** Additional governed inputs to a composite KPI; absent on single-source cards. */
+  secondarySourceInsights?: ExecutiveScorecardSourceInsight[];
 }
 
 function validTimestamp(value: string | null): number | null {
@@ -377,6 +387,7 @@ function selectExecutiveSource({
   period,
   needsComparison = false,
   requiredWindow = "mtd" as "mtd" | "trailing" | "today" | "ytd" | null,
+  requiredRecipe = null as { id: string; version: number } | null,
 }: {
   kpis: ReadonlyArray<ExecutiveScorecardKpi>;
   keys: ReadonlyArray<string>;
@@ -384,11 +395,18 @@ function selectExecutiveSource({
   period: string | null;
   needsComparison?: boolean;
   requiredWindow?: "mtd" | "trailing" | "today" | "ytd" | null;
+  requiredRecipe?: { id: string; version: number } | null;
 }): SelectedExecutiveSource {
   const candidates = kpis.filter((kpi) => keys.includes(kpi.kpiKey) && sourceMatchesPeriod(kpi, period));
   const scoped = candidates.filter((kpi) => locationId !== null && kpi.locationId === locationId);
   if (scoped.length === 0) return { source: null, message: "No exact location-scoped governed source is available." };
-  const windowed = requiredWindow === null ? scoped : scoped.filter((kpi) => kpi.observationWindow === requiredWindow);
+  const recipeMatched = requiredRecipe === null
+    ? scoped
+    : scoped.filter((kpi) => kpi.endpointRecipeId === requiredRecipe.id && kpi.endpointRecipeVersion === requiredRecipe.version);
+  if (recipeMatched.length === 0) {
+    return { source: null, message: `The required governed source ${requiredRecipe?.id} v${requiredRecipe?.version} is unavailable.` };
+  }
+  const windowed = requiredWindow === null ? recipeMatched : recipeMatched.filter((kpi) => kpi.observationWindow === requiredWindow);
   if (windowed.length === 0) return { source: null, message: `The source does not declare the required ${requiredWindow ?? "governed"} observation window.` };
   const timestamped = windowed.filter((kpi) => validTimestamp(sourceAsOf(kpi)) !== null);
   if (timestamped.length === 0) return { source: null, message: "The source does not declare a valid as-of timestamp." };
@@ -494,7 +512,12 @@ export function shapeExecutiveScorecard({
   period?: string | null;
 }): ExecutiveScorecardCard[] {
   const executiveKpis = kpis as ReadonlyArray<ExecutiveScorecardKpi>;
-  const revenue = selectExecutiveSource({ kpis: executiveKpis, keys: ["revenue-mtd"], locationId, period });
+  const revenue = selectExecutiveSource({ kpis: executiveKpis, keys: ["revenue-mtd"], locationId, period, requiredWindow: "mtd" });
+  const pipelinePeriod = period ?? productionPeriodKey(revenue.source?.periodEnd ?? null);
+  const pipeline = selectExecutiveSource({
+    kpis: executiveKpis, keys: ["pipeline"], locationId, period: pipelinePeriod, requiredWindow: "mtd",
+    requiredRecipe: { id: "sold-estimates-value", version: 2 },
+  });
   const revenueSource = revenue.source;
   const periodLabel = localPeriodLabel(revenueSource?.periodEnd ?? null, timeZone);
   const budget = validBudget(budgets, locationId, revenueSource ? sourceAsOf(revenueSource) : null, timeZone);
@@ -509,14 +532,43 @@ export function shapeExecutiveScorecard({
   };
   const forecast = revenueActual !== null && fraction !== null && fraction > 0 ? revenueActual / fraction : null;
   const forecastDataStatus: ExecutiveDataStatus = revenueDataStatus;
-  const forecastMessage = fraction === null || fraction <= 0 ? "A valid local-calendar elapsed fraction is unavailable." : revenue.message;
-  const forecastSource = revenueSource ?? unavailableExecutiveSource("run-rate-forecast", "Run-Rate Forecast vs Budget", forecastMessage);
+  const pipelineSource = pipeline.source;
+  const pipelineDataStatus = pipelineSource && isFiniteValue(pipelineSource.value)
+    ? executiveDataStatus(pipelineSource.dataHealth ?? pipelineSource.health)
+    : "Unavailable";
+  const pipelineValue = pipelineDataStatus === "Current" ? pipelineSource?.value ?? null : null;
+  const currentCompletedRevenue = revenueDataStatus === "Current" ? revenueActual : null;
+  const committedRevenue = currentCompletedRevenue !== null && pipelineValue !== null ? currentCompletedRevenue + pipelineValue : null;
+  const budgetGap = budget && committedRevenue !== null ? budget.amount - committedRevenue : null;
+  const pipelineFact = pipelineSource && isFiniteValue(pipelineSource.value)
+    ? `${formatProductionValue(pipelineSource.value, "currency")}${pipelineDataStatus === "Current" ? "" : ` · ${pipelineDataStatus}`}`
+    : "Unavailable";
+  const gapFact = budgetGap === null
+    ? "Unavailable"
+    : budgetGap >= 0 ? formatProductionValue(budgetGap, "currency") : `${formatProductionValue(Math.abs(budgetGap), "currency")} headroom`;
+  const forecastMessage = fraction === null || fraction <= 0
+    ? "A valid local-calendar elapsed fraction is unavailable."
+    : `${revenue.message} Sold + scheduled pipeline: ${pipeline.message}`;
+  const forecastSource = revenueSource ?? unavailableExecutiveSource("run-rate-forecast", "Month-End Revenue Outlook vs Budget", forecastMessage);
   const forecastCard: ExecutiveScorecardCard = {
-    id: "run-rate-forecast", title: "Run-Rate Forecast vs Budget", subtitle: "Revenue MTD ÷ local-calendar elapsed fraction; not a statistical projected close.",
+    id: "run-rate-forecast", title: "Month-End Revenue Outlook vs Budget", subtitle: "Pace forecast with completed revenue, sold work scheduled through period-end, and the remaining budget gap shown separately.",
     value: forecastDataStatus === "Unavailable" ? null : forecast, valueKind: "currency", percentValueScale: "whole", comparisonValue: budget?.amount ?? null,
     comparisonLabel: budget ? "monthly budget" : null, performanceStatus: attainmentStatus(forecast, budget?.amount ?? null), dataStatus: forecastDataStatus,
     dataMessage: forecastMessage, periodLabel, asOf: sourceAsOf(forecastSource as ExecutiveScorecardKpi), budgetLineage: budget?.lineage ?? null,
-    facts: [{ label: "Elapsed local calendar", value: fraction === null ? "Unavailable" : `${(fraction * 100).toFixed(1)}%` }, { label: "Monthly budget", value: budget ? formatProductionValue(budget.amount, "currency") : "Not published" }], membershipMovement: null, source: forecastSource,
+    facts: [
+      { label: "Completed revenue MTD", value: revenueActual === null ? "Unavailable" : formatProductionValue(revenueActual, "currency") },
+      { label: "Sold + scheduled pipeline", value: pipelineFact },
+      { label: "Committed revenue", value: committedRevenue === null ? "Unavailable" : formatProductionValue(committedRevenue, "currency") },
+      { label: "Gap after committed", value: gapFact },
+      { label: "Elapsed local calendar", value: fraction === null ? "Unavailable" : `${(fraction * 100).toFixed(1)}%` },
+      { label: "Monthly budget", value: budget ? formatProductionValue(budget.amount, "currency") : "Not published" },
+    ], membershipMovement: null, source: forecastSource,
+    secondarySourceInsights: [{
+      label: "sold + scheduled pipeline",
+      dataStatus: pipelineDataStatus,
+      message: pipeline.message,
+      source: pipelineSource,
+    }],
   };
   const repair = cardFromSource({ id: "repair-volume", title: "Repair Volume vs PY", subtitle: "Completed repair jobs, using binding-pinned job-type IDs.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["repair-job-volume"], locationId, period, needsComparison: true }), valueKind: "number", comparison: true, periodLabel });
   const maintenanceCard = cardFromSource({ id: "maintenance-volume", title: "Maintenance Job Volume vs PY", subtitle: "Completed maintenance jobs, using binding-pinned job-type IDs.", selected: selectExecutiveSource({ kpis: executiveKpis, keys: ["maintenance-job-volume"], locationId, period, needsComparison: true }), valueKind: "number", comparison: true, periodLabel });
@@ -546,8 +598,25 @@ export function shapeExecutiveScorecard({
   return [revenueCard, forecastCard, repair, maintenanceCard, opportunity, close, ticket, membershipsCard];
 }
 
+export function executiveSecondarySourceLineage(card: ExecutiveScorecardCard): string {
+  const insights = card.secondarySourceInsights ?? [];
+  if (insights.length === 0) return "Not applicable";
+  return insights.map((insight) => {
+    const source = insight.source;
+    const identity = source
+      ? [
+          source.sourceSystem,
+          source.endpointRecipeId && source.endpointRecipeVersion !== null && source.endpointRecipeVersion !== undefined
+            ? `${source.endpointRecipeId}@${source.endpointRecipeVersion}`
+            : null,
+        ].filter(Boolean).join(" · ")
+      : "No governed observation";
+    return `${insight.label}: ${insight.dataStatus} · ${identity}`;
+  }).join(" | ");
+}
+
 export function createExecutiveScorecardCsv(cards: ReadonlyArray<ExecutiveScorecardCard>): string {
-  const headers = ["KPI", "Actual", "Comparison", "Comparison basis", "Period", "Performance status", "Data status", "Budget lineage", "Data message", "Formula"];
-  const body = cards.map((card) => [card.title, formatProductionValue(card.value, card.valueKind, card.percentValueScale), card.comparisonValue === null ? "Unavailable" : formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale), card.comparisonLabel ?? "Not applicable", card.periodLabel, card.performanceStatus, card.dataStatus, card.budgetLineage ?? "Not applicable", card.dataMessage, card.id === "run-rate-forecast" ? "Revenue MTD / local-calendar elapsed fraction" : "Governed source value"]);
+  const headers = ["KPI", "Actual", "Comparison", "Comparison basis", "Period", "Performance status", "Data status", "Budget lineage", "Secondary source lineage", "Data message", "Formula"];
+  const body = cards.map((card) => [card.title, formatProductionValue(card.value, card.valueKind, card.percentValueScale), card.comparisonValue === null ? "Unavailable" : formatProductionValue(card.comparisonValue, card.valueKind, card.percentValueScale), card.comparisonLabel ?? "Not applicable", card.periodLabel, card.performanceStatus, card.dataStatus, card.budgetLineage ?? "Not applicable", executiveSecondarySourceLineage(card), card.dataMessage, card.id === "run-rate-forecast" ? "Pace forecast = Revenue MTD / local-calendar elapsed fraction; committed revenue = Revenue MTD + current sold-and-scheduled pipeline" : "Governed source value"]);
   return [headers, ...body].map((row) => row.map(csvCell).join(",")).join("\r\n");
 }

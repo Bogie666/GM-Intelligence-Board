@@ -259,13 +259,18 @@ export async function governBinding(args, dependencies = {}) {
   } else if (binding.source_method === "domo_dataset") {
     const source = await exactSingle(
       supabase.from("domo_dataset_sources")
-        .select("id,dataset_id,value_column,reduction,date_column,filter_column,filter_value,lifecycle,status")
+        .select("id,dataset_id,value_column,reduction,period_mode,date_column,month_column,year_column,filter_column,filter_value,expected_period_rows,lifecycle,status")
         .eq("organization_id", organizationId).eq("id", binding.domo_dataset_source_id)
         .eq("domo_connection_id", binding.domo_connection_id)
         .eq("status", "active").neq("lifecycle", "archived"),
       "source-unavailable", "The Domo dataset source is unavailable.",
     );
     if (source.status !== "active" || source.lifecycle === "archived") throw new WorkerInputError("source-ineligible", "The Domo dataset source is archived or inactive.");
+    const location = await exactSingle(
+      supabase.from("locations").select("id,organization_id,timezone")
+        .eq("organization_id", organizationId).eq("id", binding.location_id).eq("status", "active"),
+      "location-unavailable", "The exact binding location timezone is unavailable.",
+    );
     const domoConnection = await exactSingle(
       supabase.from("domo_connections")
         .select("id,organization_id,status,secret_reference")
@@ -281,11 +286,16 @@ export async function governBinding(args, dependencies = {}) {
         datasetId: source.dataset_id,
         valueColumn: source.value_column,
         reduction: source.reduction,
+        periodMode: source.period_mode,
         dateColumn: source.date_column,
+        monthColumn: source.month_column,
+        yearColumn: source.year_column,
         filterColumn: source.filter_column,
         filterValue: source.filter_value,
+        expectedPeriodRows: source.expected_period_rows,
       },
       period,
+      timeZone: location.timezone,
       options: dependencies.executionOptions,
     });
     rpcName = "approve_domo_dataset_binding";

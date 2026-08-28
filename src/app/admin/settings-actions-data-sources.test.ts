@@ -47,7 +47,7 @@ vi.mock("@/lib/domo-admin", () => ({
   validateBoundedDecimal: (value: string) => ({ ok: true, value }),
   validateDomoRefreshCadence: (value: string) => ["4h", "12h", "24h"].includes(value),
   validateDomoConnectionInput: (value: Record<string, string>) => ({ ok: true, value }),
-  validateDomoDatasetSourceInput: (value: Record<string, string>) => ({ ok: true, value: { ...value, description: value.description || "", valueColumn: value.valueColumn || null, dateColumn: value.dateColumn || null, filterColumn: value.filterColumn || null, filterValue: value.filterValue || null } }),
+  validateDomoDatasetSourceInput: (value: Record<string, string>) => ({ ok: true, value: { ...value, description: value.description || "", valueColumn: value.valueColumn || null, periodMode: value.periodMode || "none", dateColumn: value.dateColumn || null, monthColumn: value.monthColumn || null, yearColumn: value.yearColumn || null, filterColumn: value.filterColumn || null, filterValue: value.filterValue || null, expectedPeriodRows: value.expectedPeriodRows ? Number(value.expectedPeriodRows) : null } }),
 }));
 vi.mock("@/lib/production-admin-settings", () => ({
   reportSchemaFingerprint: () => "sha256:test",
@@ -96,6 +96,7 @@ const fakeSupabase = { rpc: (...args: unknown[]) => mocks.rpc(...args), from: (t
 import {
   archiveCustomEndpointSourceAction,
   archiveDomoDatasetSourceAction,
+  createDomoDatasetSourceAction,
   createCustomEndpointSourceAction,
   disableDomoConnectionAction,
   governCustomEndpointBindingAction,
@@ -165,6 +166,23 @@ describe("data-source administration actions", () => {
       p_organization_id: IDS.organization, p_connection_id: IDS.connection, p_service_titan_tenant_id: "tenant-1",
       p_name: "Completed jobs", p_description: "Governed", p_category: "jobs", p_query_parameters: { status: "Completed" },
       p_reduction: "count", p_value_field: null, p_business_unit_field: "businessUnit.id",
+    });
+  });
+
+  it("passes the complete portfolio-safe Domo month/year contract through the tenant RPC", async () => {
+    const result = await createDomoDatasetSourceAction(INITIAL, form({
+      connectionId: IDS.connection, datasetId: "259fcf40-c679-480e-80b6-107ce9716b7e",
+      name: "Mapped monthly budget", description: "Organization-owned mapping", valueColumn: "Budget",
+      reduction: "sum", periodMode: "month_year", dateColumn: "", monthColumn: "Month", yearColumn: "Year",
+      filterColumn: "Master Location", filterValue: "Lex", expectedPeriodRows: "1",
+    }));
+    expect(result.status).toBe("success");
+    expect(mocks.rpc).toHaveBeenCalledWith("create_domo_dataset_source", {
+      p_organization_id: IDS.organization, p_domo_connection_id: IDS.connection,
+      p_dataset_id: "259fcf40-c679-480e-80b6-107ce9716b7e", p_name: "Mapped monthly budget",
+      p_description: "Organization-owned mapping", p_value_column: "Budget", p_reduction: "sum",
+      p_period_mode: "month_year", p_date_column: null, p_month_column: "Month", p_year_column: "Year",
+      p_filter_column: "Master Location", p_filter_value: "Lex", p_expected_period_rows: 1,
     });
   });
 
