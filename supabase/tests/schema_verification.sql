@@ -783,6 +783,12 @@ begin
   ) then
     raise exception 'scheduled pipeline v2 release marker is missing';
   end if;
+  if not exists (
+    select 1 from public.schema_releases
+    where release_marker = '20260828000300_pipeline_binding_archive_cutover'
+  ) then
+    raise exception 'pipeline binding archive cutover release marker is missing';
+  end if;
   if pg_catalog.strpos(
        (
          select pg_catalog.pg_get_constraintdef(constraint_record.oid)
@@ -804,6 +810,14 @@ begin
        '''pipeline'''
      ) = 0 then
     raise exception 'pipeline definition is not pinned by the Executive catalog binding trigger';
+  end if;
+  if pg_catalog.strpos(
+       pg_catalog.pg_get_functiondef(
+         'public.enforce_executive_catalog_binding_contract()'::regprocedure
+       ),
+       'Archiving a historical Executive binding cannot change its source contract'
+     ) = 0 then
+    raise exception 'historical Executive binding archival guard is missing';
   end if;
 end
 $scheduled_pipeline_v2_catalog$;
