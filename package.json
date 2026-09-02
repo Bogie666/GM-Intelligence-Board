@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=1",
     "test:servicetitan-worker": "node --test scripts/servicetitan-report-worker.node-test.mjs scripts/servicetitan-business-unit-discovery.node-test.mjs scripts/servicetitan-validation.node-test.mjs scripts/approve-servicetitan-saved-report.node-test.mjs scripts/approve-data-source-binding.node-test.mjs scripts/servicetitan-endpoint-ingestion.node-test.mjs scripts/domo-dataset.node-test.mjs",
     "check:operator-scripts": "node --check scripts/bootstrap-tenant.mjs && node --check scripts/remove-qa-tenant.mjs && node --check scripts/validate-servicetitan-connection.mjs && node --check scripts/ingest-servicetitan-report.mjs && node --check scripts/approve-servicetitan-saved-report.mjs && node --check scripts/discover-servicetitan-business-units.mjs && node --check scripts/approve-data-source-binding.mjs && node --check scripts/run-data-source-ingestion.mjs && node --check scripts/lib/servicetitan-report.mjs && node --check scripts/lib/servicetitan-business-unit-discovery.mjs && node --check scripts/lib/servicetitan-validation.mjs && node --check scripts/lib/servicetitan-endpoint-ingestion.mjs && node --check scripts/lib/domo-dataset.mjs",
     "tenant:bootstrap": "node scripts/bootstrap-tenant.mjs",

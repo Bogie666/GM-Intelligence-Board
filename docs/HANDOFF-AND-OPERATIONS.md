@@ -59,6 +59,17 @@ Long-running reports may return `202` from `POST .../data/query`; poll `GET data
 - unmapped-record scan
 - snapshot completeness check
 
+### Manual ingestion catch-up
+
+Use only the governed queue worker when an operator needs to drain approved bindings outside the normal scheduler interval:
+
+```bash
+npm run data-source:ingest -- --only endpoint --dry-run
+npm run data-source:ingest -- --only endpoint
+```
+
+The dry run must pass before the materializing run. Both commands retain the due-binding queue, managed-secret resolution, location-timezone period derivation, comparison lineage, source-version lineage, idempotency, and ingestion-run ledger controls. Do not directly query approved bindings, read credential payload columns, call endpoint recipes, or insert `kpi_observations` from an ad hoc force-ingestion script. If a binding is not due, correct the governed scheduler or binding state rather than bypassing it.
+
 ### Monthly administrator
 
 - upload/approve budget version
