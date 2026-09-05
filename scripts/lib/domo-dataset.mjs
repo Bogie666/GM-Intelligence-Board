@@ -135,6 +135,9 @@ export function parseDomoCsv(text) {
   if (!rows.length) fail("domo_export_empty", "Domo export contained no header row.");
   const header = rows[0].map((name) => name.trim());
   if (header.some((name) => !name || name.length > 200)) fail("domo_export_invalid", "Domo export header names are invalid.");
+  if (new Set(header).size !== header.length) {
+    fail("domo_export_duplicate_header", "Domo export header names must be unique.");
+  }
   const body = rows.slice(1);
   for (const record of body) {
     if (record.length !== header.length) fail("domo_export_invalid", "A Domo export row does not match the header width.");

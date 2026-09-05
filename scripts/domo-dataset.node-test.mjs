@@ -39,6 +39,10 @@ test("CSV parser handles quotes, escapes, and CRLF and enforces header/rectangle
   assert.deepEqual(parsed.rows, [["Dallas, TX", "1000.50", "2026-08-05"], ['Quote "Q"', "2", "2026-08-06"]]);
   assert.throws(() => parseDomoCsv('A,B\n1\n'), DomoIngestionError);
   assert.throws(() => parseDomoCsv('A,B\n"open,1\n'), DomoIngestionError);
+  assert.throws(
+    () => parseDomoCsv("Amount, Amount\n100,900\n"),
+    (error) => error instanceof DomoIngestionError && error.code === "domo_export_duplicate_header",
+  );
   assert.throws(() => parseDomoCsv(""), DomoIngestionError);
 });
 
