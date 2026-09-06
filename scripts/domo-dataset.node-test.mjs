@@ -40,10 +40,26 @@ test("CSV parser handles quotes, escapes, and CRLF and enforces header/rectangle
   assert.throws(() => parseDomoCsv('A,B\n1\n'), DomoIngestionError);
   assert.throws(() => parseDomoCsv('A,B\n"open,1\n'), DomoIngestionError);
   assert.throws(
+    () => parseDomoCsv('A,B\nvalue"quoted",1\n'),
+    (error) => error instanceof DomoIngestionError && error.code === "domo_export_invalid",
+  );
+  assert.throws(
+    () => parseDomoCsv('A,B\n"value"suffix,1\n'),
+    (error) => error instanceof DomoIngestionError && error.code === "domo_export_invalid",
+  );
+  assert.throws(
     () => parseDomoCsv("Amount, Amount\n100,900\n"),
     (error) => error instanceof DomoIngestionError && error.code === "domo_export_duplicate_header",
   );
   assert.throws(() => parseDomoCsv(""), DomoIngestionError);
+});
+
+test("CSV parser enforces the governed data-row limit without requiring a trailing newline", () => {
+  const oversized = `Amount\n${"1\n".repeat(250_000)}1`;
+  assert.throws(
+    () => parseDomoCsv(oversized),
+    (error) => error instanceof DomoIngestionError && error.code === "domo_export_too_large",
+  );
 });
 
 test("dataset contract validation is fail-closed", () => {

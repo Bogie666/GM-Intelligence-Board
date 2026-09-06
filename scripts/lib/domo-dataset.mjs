@@ -107,31 +107,45 @@ export function parseDomoCsv(text) {
   let field = "";
   let row = [];
   let inQuotes = false;
+  let closedQuote = false;
+  const pushRow = () => {
+    row.push(field);
+    field = "";
+    if (row.length > 1 || row[0] !== "") rows.push(row);
+    row = [];
+    closedQuote = false;
+    // The header is not an export data row.
+    if (rows.length > MAX_EXPORT_ROWS + 1) {
+      fail("domo_export_too_large", "Domo export exceeded the governed row limit.");
+    }
+  };
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
     if (inQuotes) {
       if (char === '"') {
         if (text[index + 1] === '"') { field += '"'; index += 1; }
-        else inQuotes = false;
+        else { inQuotes = false; closedQuote = true; }
       } else field += char;
       continue;
     }
-    if (char === '"') { inQuotes = true; continue; }
-    if (char === ",") { row.push(field); field = ""; continue; }
-    if (char === "\n" || char === "\r") {
-      if (char === "\r" && text[index + 1] === "\n") index += 1;
-      row.push(field);
-      field = "";
-      if (row.length > 1 || row[0] !== "") rows.push(row);
-      row = [];
-      if (rows.length > MAX_EXPORT_ROWS) fail("domo_export_too_large", "Domo export exceeded the governed row limit.");
+    if (char === '"') {
+      if (field !== "" || closedQuote) {
+        fail("domo_export_invalid", "Domo export contains an invalid quote placement.");
+      }
+      inQuotes = true;
       continue;
     }
+    if (char === ",") { row.push(field); field = ""; closedQuote = false; continue; }
+    if (char === "\n" || char === "\r") {
+      if (char === "\r" && text[index + 1] === "\n") index += 1;
+      pushRow();
+      continue;
+    }
+    if (closedQuote) fail("domo_export_invalid", "Domo export contains characters after a closing quote.");
     field += char;
   }
   if (inQuotes) fail("domo_export_invalid", "Domo export contains an unterminated quoted field.");
-  row.push(field);
-  if (row.length > 1 || row[0] !== "") rows.push(row);
+  pushRow();
   if (!rows.length) fail("domo_export_empty", "Domo export contained no header row.");
   const header = rows[0].map((name) => name.trim());
   if (header.some((name) => !name || name.length > 200)) fail("domo_export_invalid", "Domo export header names are invalid.");
